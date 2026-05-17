@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -w \"\\\\nHTTP:%{http_code}\" -X POST http://localhost:8000/shortcircuit/cycles -H \"Content-Type: application/json\" -d \"{\\\\\"name\\\\\":\\\\\"t\\\\\",\\\\\"f_hz\\\\\":60,\\\\\"buses\\\\\":[{\\\\\"id\\\\\":1,\\\\\"name\\\\\":\\\\\"B\\\\\",\\\\\"vn_kv\\\\\":22.9,\\\\\"type\\\\\":\\\\\"b\\\\\"}],\\\\\"external_grids\\\\\":[],\\\\\"loads\\\\\":[],\\\\\"generators\\\\\":[],\\\\\"lines\\\\\":[],\\\\\"transformers\\\\\":[]}\")"
+    ]
+  }
+}

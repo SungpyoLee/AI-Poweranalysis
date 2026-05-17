@@ -1,0 +1,43 @@
+{
+  "name": "예제 계통 (154kV/22.9kV)",
+  "f_hz": 60.0,
+  "buses": [
+    {"id": 1, "name": "154kV 모선", "vn_kv": 154.0},
+    {"id": 2, "name": "22.9kV 모선 A", "vn_kv": 22.9},
+    {"id": 3, "name": "22.9kV 모선 B", "vn_kv": 22.9}
+  ],
+  "external_grids": [
+    {"bus_id": 1, "name": "한전 계통", "vm_pu": 1.0, "va_degree": 0.0}
+  ],
+  "loads": [
+    {"bus_id": 2, "name": "부하 A", "p_mw": 5.0, "q_mvar": 2.0},
+    {"bus_id": 3, "name": "부하 B", "p_mw": 3.0, "q_mvar": 1.0}
+  ],
+  "generators": [],
+  "lines": [
+    {
+      "from_bus_id": 2,
+      "to_bus_id": 3,
+      "name": "22.9kV 연계선",
+      "length_km": 2.0,
+      "r_ohm_per_km": 0.1,
+      "x_ohm_per_km": 0.1,
+      "c_nf_per_km": 0.0,
+      "max_i_ka": 0.5
+    }
+  ],
+  "transformers": [
+    {
+      "hv_bus_id": 1,
+      "lv_bus_id": 2,
+      "name": "TR-1 (154/22.9kV)",
+      "sn_mva": 30.0,
+      "vn_hv_kv": 154.0,
+      "vn_lv_kv": 22.9,
+      "vk_percent": 12.0,
+      "vkr_percent": 0.5,
+      "pfe_kw": 30.0,
+      "i0_percent": 0.1
+    }
+  ]
+}
