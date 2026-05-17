@@ -1,7 +1,8 @@
 import axios from 'axios'
 
-// Vite proxies /loadflow and /shortcircuit → http://127.0.0.1:8000
-const api = axios.create({ baseURL: '' })
+// Dev: Vite proxy → 127.0.0.1:8000
+// Prod: VITE_API_URL env variable set in Vercel → Render backend
+const api = axios.create({ baseURL: import.meta.env.VITE_API_URL ?? '' })
 
 // Strip frontend-only fields before sending to backend
 function apiPayload(network) {
