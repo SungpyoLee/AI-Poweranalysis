@@ -146,6 +146,11 @@ export default function Toolbar({
               </svg>
             }
           />
+        </RibbonGroup>
+
+        <div style={{ width: 1, background: '#a8b4c0', margin: '6px 3px 10px' }} />
+
+        <RibbonGroup label="레 이 아 웃">
           <RibbonBtn
             onClick={onAutoLayout}
             label="Auto Layout"
