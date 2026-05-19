@@ -9,10 +9,10 @@ export type EquipmentType =
 // ── Connection rules: which target types are allowed per source type ─────────
 export const CONNECTION_RULES: Record<EquipmentType, EquipmentType[]> = {
   bus:         ['transformer', 'breaker', 'motor', 'generator'],
-  transformer: ['bus'],
-  breaker:     ['bus'],
-  motor:       ['bus'],
-  generator:   ['bus'],
+  transformer: ['bus', 'breaker'],
+  breaker:     ['bus', 'motor', 'generator', 'transformer'],
+  motor:       ['bus', 'breaker'],
+  generator:   ['bus', 'breaker'],
 }
 
 // ── Per-equipment property shapes ────────────────────────────────────────────

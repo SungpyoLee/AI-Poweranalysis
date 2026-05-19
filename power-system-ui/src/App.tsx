@@ -21,6 +21,7 @@ import CableEdge from './edges/CableEdge'
 import type { NodeData, EdgeData, EquipmentType, CableProperties } from './types'
 import { defaultProps, defaultCableProps } from './types'
 import { runLoadflow, runShortcircuit } from './api'
+import { computeETAPLayout } from './utils/etapLayout'
 
 // ── ReactFlow node/edge type registries ──────────────────────────────────────
 const NODE_TYPES = {
@@ -35,41 +36,66 @@ const EDGE_TYPES = {
   cable: CableEdge,
 } as const
 
-// ── Example network ──────────────────────────────────────────────────────────
-const EXAMPLE_NODES: Node<NodeData>[] = [
-  { id: 'bus-1', type: 'bus', position: { x: 200, y: 60 },
+// ── Example network (industrial plant 3-level SLD) ───────────────────────────
+// Topology: 154kV Bus → [Gen, CB-T1→TR-1→22.9kV Bus → [CB-1→M1, CB-2→M2, CB-T2→TR-2→0.4kV Bus → [CB-3→M3, CB-4→M4]]]
+const _RAW_NODES: Node<NodeData>[] = [
+  { id: 'bus-hv',  type: 'bus', position: { x: 0, y: 0 },
     data: { equipmentType: 'bus', props: { name: '154kV Main Bus', vn_kv: 154, busType: 'Slack' } } },
-  { id: 'tr-1', type: 'transformer', position: { x: 360, y: 180 },
+  { id: 'gen-1',   type: 'generator', position: { x: 0, y: 0 },
+    data: { equipmentType: 'generator', props: { name: 'G-1', p_mw: 30, vn_kv: 11, pf: 0.9, vm_pu: 1.02 } } },
+  { id: 'cb-t1',   type: 'breaker', position: { x: 0, y: 0 },
+    data: { equipmentType: 'breaker', props: { name: 'CB-T1', rated_kA: 40, is_closed: true, interrupt_kA: 40 } } },
+  { id: 'tr-1',    type: 'transformer', position: { x: 0, y: 0 },
     data: { equipmentType: 'transformer', props: { name: 'TR-1', sn_mva: 30, vn_hv_kv: 154, vn_lv_kv: 22.9, vk_percent: 12, xr_ratio: 10 } } },
-  { id: 'bus-2', type: 'bus', position: { x: 200, y: 360 },
+  { id: 'bus-mv',  type: 'bus', position: { x: 0, y: 0 },
     data: { equipmentType: 'bus', props: { name: '22.9kV Bus', vn_kv: 22.9, busType: 'PQ' } } },
-  { id: 'cb-1', type: 'breaker', position: { x: 380, y: 460 },
+  { id: 'cb-1',    type: 'breaker', position: { x: 0, y: 0 },
     data: { equipmentType: 'breaker', props: { name: 'CB-1', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
-  { id: 'cb-2', type: 'breaker', position: { x: 480, y: 460 },
+  { id: 'mot-1',   type: 'motor', position: { x: 0, y: 0 },
+    data: { equipmentType: 'motor', props: { name: 'M-1', p_kw: 2000, vn_kv: 22.9, pf: 0.85, efficiency: 94 } } },
+  { id: 'cb-2',    type: 'breaker', position: { x: 0, y: 0 },
     data: { equipmentType: 'breaker', props: { name: 'CB-2', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
-  { id: 'bus-3', type: 'bus', position: { x: 340, y: 560 },
-    data: { equipmentType: 'bus', props: { name: 'MCC Bus A', vn_kv: 0.4, busType: 'PQ' } } },
-  { id: 'bus-4', type: 'bus', position: { x: 600, y: 560 },
-    data: { equipmentType: 'bus', props: { name: 'MCC Bus B', vn_kv: 0.4, busType: 'PQ' } } },
-  { id: 'mot-1', type: 'motor', position: { x: 280, y: 680 },
-    data: { equipmentType: 'motor', props: { name: 'M-1', p_kw: 500, vn_kv: 0.4, pf: 0.85, efficiency: 92 } } },
-  { id: 'mot-2', type: 'motor', position: { x: 400, y: 680 },
-    data: { equipmentType: 'motor', props: { name: 'M-2', p_kw: 200, vn_kv: 0.4, pf: 0.85, efficiency: 92 } } },
-  { id: 'gen-1', type: 'generator', position: { x: 0, y: 60 },
-    data: { equipmentType: 'generator', props: { name: 'G-1', p_mw: 10, vn_kv: 11, pf: 0.9, vm_pu: 1.0 } } },
+  { id: 'mot-2',   type: 'motor', position: { x: 0, y: 0 },
+    data: { equipmentType: 'motor', props: { name: 'M-2', p_kw: 1500, vn_kv: 22.9, pf: 0.85, efficiency: 93 } } },
+  { id: 'cb-t2',   type: 'breaker', position: { x: 0, y: 0 },
+    data: { equipmentType: 'breaker', props: { name: 'CB-T2', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
+  { id: 'tr-2',    type: 'transformer', position: { x: 0, y: 0 },
+    data: { equipmentType: 'transformer', props: { name: 'TR-2', sn_mva: 2, vn_hv_kv: 22.9, vn_lv_kv: 0.4, vk_percent: 6, xr_ratio: 6 } } },
+  { id: 'bus-lv',  type: 'bus', position: { x: 0, y: 0 },
+    data: { equipmentType: 'bus', props: { name: '0.4kV MCC Bus', vn_kv: 0.4, busType: 'PQ' } } },
+  { id: 'cb-3',    type: 'breaker', position: { x: 0, y: 0 },
+    data: { equipmentType: 'breaker', props: { name: 'CB-3', rated_kA: 10, is_closed: true, interrupt_kA: 10 } } },
+  { id: 'mot-3',   type: 'motor', position: { x: 0, y: 0 },
+    data: { equipmentType: 'motor', props: { name: 'M-3', p_kw: 75, vn_kv: 0.4, pf: 0.85, efficiency: 90 } } },
+  { id: 'cb-4',    type: 'breaker', position: { x: 0, y: 0 },
+    data: { equipmentType: 'breaker', props: { name: 'CB-4', rated_kA: 10, is_closed: true, interrupt_kA: 10 } } },
+  { id: 'mot-4',   type: 'motor', position: { x: 0, y: 0 },
+    data: { equipmentType: 'motor', props: { name: 'M-4', p_kw: 45, vn_kv: 0.4, pf: 0.85, efficiency: 90 } } },
 ]
 
-const EXAMPLE_EDGES: Edge<EdgeData>[] = [
-  { id: 'e-bus1-tr1',  source: 'bus-1', target: 'tr-1',  type: 'cable', data: { props: { name: 'C-1', length_km: 0.1, r_ohm_per_km: 0.08, x_ohm_per_km: 0.08, max_i_ka: 1.0 } } },
-  { id: 'e-tr1-bus2',  source: 'tr-1',  target: 'bus-2', type: 'cable', data: { props: { name: 'C-2', length_km: 0.1, r_ohm_per_km: 0.08, x_ohm_per_km: 0.08, max_i_ka: 1.0 } } },
-  { id: 'e-bus2-cb1',  source: 'bus-2', target: 'cb-1',  type: 'cable', data: { props: { name: 'F-1', length_km: 0.5, r_ohm_per_km: 0.164, x_ohm_per_km: 0.1, max_i_ka: 0.5 } } },
-  { id: 'e-bus2-cb2',  source: 'bus-2', target: 'cb-2',  type: 'cable', data: { props: { name: 'F-2', length_km: 0.8, r_ohm_per_km: 0.164, x_ohm_per_km: 0.1, max_i_ka: 0.5 } } },
-  { id: 'e-cb1-bus3',  source: 'cb-1',  target: 'bus-3', type: 'cable', data: { props: { name: 'F-1b', length_km: 0.1, r_ohm_per_km: 0.08, x_ohm_per_km: 0.08, max_i_ka: 0.5 } } },
-  { id: 'e-cb2-bus4',  source: 'cb-2',  target: 'bus-4', type: 'cable', data: { props: { name: 'F-2b', length_km: 0.1, r_ohm_per_km: 0.08, x_ohm_per_km: 0.08, max_i_ka: 0.5 } } },
-  { id: 'e-bus3-mot1', source: 'bus-3', target: 'mot-1', type: 'cable', data: { props: { name: 'M-C1', length_km: 0.05, r_ohm_per_km: 0.2, x_ohm_per_km: 0.08, max_i_ka: 0.3 } } },
-  { id: 'e-bus3-mot2', source: 'bus-3', target: 'mot-2', type: 'cable', data: { props: { name: 'M-C2', length_km: 0.05, r_ohm_per_km: 0.2, x_ohm_per_km: 0.08, max_i_ka: 0.3 } } },
-  { id: 'e-bus1-gen1', source: 'bus-1', target: 'gen-1', type: 'cable', data: { props: { name: 'G-C1', length_km: 0.05, r_ohm_per_km: 0.05, x_ohm_per_km: 0.05, max_i_ka: 1.0 } } },
+function cable(name: string, len: number, r: number, x: number, iMax: number) {
+  return { props: { name, length_km: len, r_ohm_per_km: r, x_ohm_per_km: x, max_i_ka: iMax } }
+}
+const _RAW_EDGES: Edge<EdgeData>[] = [
+  { id: 'e-hv-gen',   source: 'bus-hv', target: 'gen-1',  type: 'cable', data: cable('GC-1', 0.05, 0.05, 0.05, 2.0) },
+  { id: 'e-hv-cbt1',  source: 'bus-hv', target: 'cb-t1',  type: 'cable', data: cable('HV-F1', 0.1, 0.08, 0.08, 1.0) },
+  { id: 'e-cbt1-tr1', source: 'cb-t1',  target: 'tr-1',   type: 'cable', data: cable('TC-1', 0.05, 0.05, 0.05, 1.0) },
+  { id: 'e-tr1-mv',   source: 'tr-1',   target: 'bus-mv', type: 'cable', data: cable('TC-1b', 0.05, 0.05, 0.05, 1.0) },
+  { id: 'e-mv-cb1',   source: 'bus-mv', target: 'cb-1',   type: 'cable', data: cable('MV-F1', 0.3, 0.164, 0.1, 0.8) },
+  { id: 'e-cb1-m1',   source: 'cb-1',   target: 'mot-1',  type: 'cable', data: cable('MC-1', 0.1, 0.164, 0.1, 0.8) },
+  { id: 'e-mv-cb2',   source: 'bus-mv', target: 'cb-2',   type: 'cable', data: cable('MV-F2', 0.3, 0.164, 0.1, 0.6) },
+  { id: 'e-cb2-m2',   source: 'cb-2',   target: 'mot-2',  type: 'cable', data: cable('MC-2', 0.1, 0.164, 0.1, 0.6) },
+  { id: 'e-mv-cbt2',  source: 'bus-mv', target: 'cb-t2',  type: 'cable', data: cable('MV-F3', 0.2, 0.164, 0.1, 0.5) },
+  { id: 'e-cbt2-tr2', source: 'cb-t2',  target: 'tr-2',   type: 'cable', data: cable('TC-2', 0.05, 0.05, 0.05, 0.5) },
+  { id: 'e-tr2-lv',   source: 'tr-2',   target: 'bus-lv', type: 'cable', data: cable('TC-2b', 0.05, 0.08, 0.08, 0.5) },
+  { id: 'e-lv-cb3',   source: 'bus-lv', target: 'cb-3',   type: 'cable', data: cable('LV-F1', 0.05, 0.2, 0.08, 0.3) },
+  { id: 'e-cb3-m3',   source: 'cb-3',   target: 'mot-3',  type: 'cable', data: cable('MC-3', 0.05, 0.2, 0.08, 0.3) },
+  { id: 'e-lv-cb4',   source: 'bus-lv', target: 'cb-4',   type: 'cable', data: cable('LV-F2', 0.05, 0.2, 0.08, 0.2) },
+  { id: 'e-cb4-m4',   source: 'cb-4',   target: 'mot-4',  type: 'cable', data: cable('MC-4', 0.05, 0.2, 0.08, 0.2) },
 ]
+
+// Apply ETAP layout to example at module load time
+const { nodes: EXAMPLE_NODES, edges: EXAMPLE_EDGES } = computeETAPLayout(_RAW_NODES, _RAW_EDGES)
 
 let _nodeId = 100
 
@@ -163,6 +189,15 @@ function AppInner() {
     setSelectedEdge(null)
   }, [])
 
+  // ── Auto Layout ─────────────────────────────────────────────────────────────
+  const handleAutoLayout = useCallback(() => {
+    const { nodes: ln, edges: le } = computeETAPLayout(nodes, edges)
+    setNodes(ln)
+    setEdges(le as Edge<EdgeData>[])
+    setSelectedNode(null)
+    setSelectedEdge(null)
+  }, [nodes, edges])
+
   // ── Toolbar actions ─────────────────────────────────────────────────────────
   const handleLoadExample = useCallback(() => {
     setNodes(EXAMPLE_NODES)
@@ -221,6 +256,7 @@ function AppInner() {
         <Toolbar
           onLoadExample={handleLoadExample}
           onClear={handleClear}
+          onAutoLayout={handleAutoLayout}
           onRunLoadflow={handleRunLoadflow}
           onRunShortcircuit={handleRunShortcircuit}
           loading={loading}

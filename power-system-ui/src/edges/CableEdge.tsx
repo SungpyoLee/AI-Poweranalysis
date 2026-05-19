@@ -1,42 +1,46 @@
 import { memo } from 'react'
-import { EdgeProps, getStraightPath, EdgeLabelRenderer } from 'reactflow'
+import { EdgeProps, getSmoothStepPath, EdgeLabelRenderer } from 'reactflow'
 import type { EdgeData } from '../types'
 
 function CableEdge({
-  id, sourceX, sourceY, targetX, targetY,
-  data, selected, markerEnd,
+  id, sourceX, sourceY, sourcePosition,
+  targetX, targetY, targetPosition,
+  data, selected,
 }: EdgeProps<EdgeData>) {
-  const [edgePath, labelX, labelY] = getStraightPath({ sourceX, sourceY, targetX, targetY })
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX, sourceY, sourcePosition,
+    targetX, targetY, targetPosition,
+    borderRadius: 0,   // sharp right-angle corners — ETAP style
+    offset: 20,
+  })
+
   const p = data?.props
-  const stroke = selected ? '#1a3a8a' : '#0a0a1a'
-  const strokeW = selected ? 2.5 : 1.8
+  const stroke = selected ? '#1a5aff' : '#0a0a1e'
+  const strokeW = selected ? 2.2 : 1.6
 
   return (
     <>
-      {/* Selection halo */}
       {selected && (
-        <path d={edgePath} fill="none" stroke="#4a7ae8" strokeWidth={8} strokeOpacity={0.25}/>
+        <path d={edgePath} fill="none" stroke="#4a8aff" strokeWidth={8} strokeOpacity={0.2}/>
       )}
-      {/* Main cable line */}
       <path
         id={id}
         d={edgePath}
         fill="none"
         stroke={stroke}
         strokeWidth={strokeW}
-        markerEnd={markerEnd}
         style={{ cursor: 'pointer' }}
       />
 
-      {/* Cable label (only when selected or named) */}
-      {p && (
+      {p && selected && (
         <EdgeLabelRenderer>
           <div
+            className="nodrag nopan"
             style={{
               position: 'absolute',
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: selected ? '#eef4ff' : '#ffffff',
-              border: `1px solid ${selected ? '#4a7ae8' : '#c8d0d8'}`,
+              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+              background: '#eef4ff',
+              border: '1px solid #4a8aff',
               borderRadius: 2,
               padding: '1px 5px',
               fontSize: 8.5,
@@ -44,9 +48,8 @@ function CableEdge({
               color: '#1a2030',
               pointerEvents: 'all',
               whiteSpace: 'nowrap',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
             }}
-            className="nodrag nopan"
           >
             {p.name} · {p.length_km} km
           </div>

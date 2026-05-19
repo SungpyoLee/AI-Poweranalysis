@@ -1,6 +1,7 @@
 interface Props {
   onLoadExample: () => void
   onClear: () => void
+  onAutoLayout: () => void
   onRunLoadflow: () => void
   onRunShortcircuit: () => void
   loading: boolean
@@ -81,7 +82,8 @@ function RibbonGroup({ label, children }: { label: string; children: React.React
 }
 
 export default function Toolbar({
-  onLoadExample, onClear, onRunLoadflow, onRunShortcircuit,
+  onLoadExample, onClear, onAutoLayout,
+  onRunLoadflow, onRunShortcircuit,
   loading, loadingLabel, converged, nodeCount, edgeCount,
 }: Props) {
   return (
@@ -141,6 +143,20 @@ export default function Toolbar({
               <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
                 <rect x="3" y="3" width="16" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
                 <path d="M7 7l8 8M15 7L7 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+            }
+          />
+          <RibbonBtn
+            onClick={onAutoLayout}
+            label="Auto Layout"
+            color="#003a5a"
+            icon={
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                <rect x="2" y="2" width="7" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                <rect x="7" y="9" width="7" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                <rect x="2" y="16" width="7" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                <rect x="13" y="16" width="7" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M5.5 6v3M10.5 6v3M10.5 13v3M16.5 13v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
               </svg>
             }
           />
