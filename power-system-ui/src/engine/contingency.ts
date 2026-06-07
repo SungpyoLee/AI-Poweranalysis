@@ -140,7 +140,8 @@ export function runContingencyAnalysis(
   // Node contingencies: transformer, breaker, generator
   for (const node of nodes) {
     if (!node.data.equipment.in_service) continue
-    if (node.type !== 'transformer' && node.type !== 'breaker' && node.type !== 'generator') continue
+    if (node.type !== 'transformer' && node.type !== 'transformer3w' &&
+        node.type !== 'breaker' && node.type !== 'generator') continue
 
     const modNodes = nodes.map(n =>
       n.id === node.id
@@ -148,10 +149,14 @@ export function runContingencyAnalysis(
         : n
     )
 
+    // transformer3w is reported as 'transformer' in ContingencyResult (same category)
+    const eqType: ContingencyResult['equipmentType'] =
+      node.type === 'transformer3w' ? 'transformer' : node.type as ContingencyResult['equipmentType']
+
     cases.push(analyzeOneContingency(
       node.id,
       node.data.equipment.name,
-      node.type as ContingencyResult['equipmentType'],
+      eqType,
       modNodes,
       edges,
     ))

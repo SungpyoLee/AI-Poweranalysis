@@ -4,7 +4,7 @@ import type {
   Cable, CapacitorBank, Reactor,
 } from '../types'
 import { C, type Complex } from './complex'
-import { findTransformerBuses, findConnectedBusId } from '../utils/graphTraversal'
+import { findTransformerBuses, findConnectedBusId, find3WTransformerBuses } from '../utils/graphTraversal'
 
 export const S_BASE = 100 // MVA
 
@@ -92,25 +92,7 @@ export function buildYBus(
     const starId = trNode.id + '_STAR'
     const si = nodeToIdx.get(starId)!
 
-    // Find the 3 connected buses (HV, MV, LV by descending voltage)
-    // Handle both edge directions: TR3W may be source or target
-    const connBusIds: string[] = []
-    for (const edge of edges) {
-      if (!edge.data?.cable?.in_service) continue
-      const isConnected = edge.source === trNode.id || edge.target === trNode.id
-      if (!isConnected) continue
-      const otherId = edge.source === trNode.id ? edge.target : edge.source
-      const busId = nodeMap.get(otherId)?.type === 'bus'
-        ? otherId
-        : findConnectedBusId(otherId, nodes, edges)
-      if (busId && !connBusIds.includes(busId)) connBusIds.push(busId)
-    }
-    // Sort connected buses by descending vn_kv to assign HV/MV/LV
-    const sortedBusPairs = connBusIds
-      .map(id => ({ id, vn: (nodeMap.get(id)?.data.equipment as Bus).vn_kv ?? 0 }))
-      .sort((a, b) => b.vn - a.vn)
-
-    const [hvId, mvId, lvId] = sortedBusPairs.map(p => p.id)
+    const { hvId, mvId, lvId } = find3WTransformerBuses(trNode.id, nodes, edges)
     if (!hvId || !mvId || !lvId) continue
 
     const hi = nodeToIdx.get(hvId)
@@ -177,16 +159,10 @@ export function buildYBus(
     const idx = nodeToIdx.get(busId)
     if (idx === undefined) continue
 
-    const Qeff  = cap.qn_mvar * (cap.step_enabled / Math.max(cap.steps, 1))
-    const V_kv  = cap.vn_kv
-    if (V_kv <= 0 || Qeff <= 0) continue
+    const Qeff = cap.qn_mvar * (cap.step_enabled / Math.max(cap.steps, 1))
+    if (cap.vn_kv <= 0 || Qeff <= 0) continue
 
-    // B_cap = Q / V² (system pu)
-    const Z_base = (V_kv ** 2) / S_BASE
-    const B_pu   = (Qeff / S_BASE) / (1 / Z_base)   // simplified: Q_pu = B × V²
-    // More precisely: B_cap_siemens = Q / V²_rated → B_pu = B × Z_base
-    const B_cap_pu = (Qeff / S_BASE) * (S_BASE / (V_kv ** 2)) * (V_kv ** 2 / S_BASE)
-    // = Qeff/S_BASE (since V=1 pu at rated)
+    // B_cap = Q_rated / V²_rated → B_pu = Q_rated / S_BASE (at V = 1 pu rated)
     stamp(idx, idx, { re: 0, im: Qeff / S_BASE })   // +jB (leading)
   }
 

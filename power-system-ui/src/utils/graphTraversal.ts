@@ -119,6 +119,38 @@ export function findReachableNodes(
   return visited
 }
 
+// ── 3권선 변압기 연결 버스 탐색 (HV/MV/LV 분류) ──────────────────────────────
+// in-service 엣지를 통해 직접·간접 연결된 버스를 탐색하고 전압 내림차순으로 정렬.
+// ybus.ts / shortcircuit.ts / asymmetricFault.ts 에서 동일하게 사용.
+export function find3WTransformerBuses(
+  tr3wId: string,
+  nodes:  Node<NodeData>[],
+  edges:  Edge<EdgeData>[],
+): { hvId: string | null; mvId: string | null; lvId: string | null } {
+  const nodeMap    = new Map(nodes.map(n => [n.id, n]))
+  const connBusIds: string[] = []
+
+  for (const edge of edges) {
+    if (!edge.data?.cable?.in_service) continue
+    if (edge.source !== tr3wId && edge.target !== tr3wId) continue
+    const otherId = edge.source === tr3wId ? edge.target : edge.source
+    const busId   = nodeMap.get(otherId)?.type === 'bus'
+      ? otherId
+      : findConnectedBusId(otherId, nodes, edges)
+    if (busId && !connBusIds.includes(busId)) connBusIds.push(busId)
+  }
+
+  const sorted = connBusIds
+    .map(id => ({ id, vn: ((nodeMap.get(id)?.data.equipment as Bus | undefined)?.vn_kv) ?? 0 }))
+    .sort((a, b) => b.vn - a.vn)
+
+  return {
+    hvId: sorted[0]?.id ?? null,
+    mvId: sorted[1]?.id ?? null,
+    lvId: sorted[2]?.id ?? null,
+  }
+}
+
 // ── 무향 그래프에서 연결 컴포넌트 전체 탐색 (CB 상태 무시) ──────────────────
 // Loop Detection에 사용
 export function findAllComponents(

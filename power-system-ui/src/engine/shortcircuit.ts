@@ -22,7 +22,7 @@ import type { NodeData, EdgeData, Bus, Transformer, ThreeWindingTransformer, Cab
 import { C } from './complex'
 import { S_BASE } from './ybus'
 import { computeZBusDiagonal } from './complexMatrix'
-import { findTransformerBuses, findConnectedBusId } from '../utils/graphTraversal'
+import { findTransformerBuses, findConnectedBusId, find3WTransformerBuses } from '../utils/graphTraversal'
 
 const C_MAX   = 1.1   // IEC 60909 — maximum fault voltage factor (HV/MV)
 const _dev    = import.meta.env.DEV
@@ -36,10 +36,12 @@ const TF_DEFAULT_S = 0.5  // 열적 등가 고장 지속 시간 기본값 (케�
 function calcMu(R_kk: number, X_kk: number): number {
   if (Math.abs(X_kk) < 1e-9) return 1.0   // purely resistive: no DC offset
   const RoX = Math.abs(R_kk / X_kk)
-  if (T_MIN_S <= 0.02) return Math.min(1, 0.84 + 0.26 * Math.exp(-0.26 * RoX))
-  if (T_MIN_S <= 0.05) return Math.min(1, 0.71 + 0.51 * Math.exp(-0.30 * RoX))
-  if (T_MIN_S <= 0.10) return Math.min(1, 0.56 + 0.94 * Math.exp(-0.38 * RoX))
-  return 1.0  // tmin ≥ 0.25 s: DC fully decayed
+  let mu: number
+  if      (T_MIN_S <= 0.02) mu = 0.84 + 0.26 * Math.exp(-0.26 * RoX)
+  else if (T_MIN_S <= 0.05) mu = 0.71 + 0.51 * Math.exp(-0.30 * RoX)
+  else if (T_MIN_S <= 0.10) mu = 0.56 + 0.94 * Math.exp(-0.38 * RoX)
+  else                       mu = 1.0  // tmin ≥ 0.25 s: DC fully decayed
+  return Math.min(1.0, Math.max(0.4, mu))  // IEC 60909 Table 8 clamp [0.4, 1.0]
 }
 
 // P2-2: c_min by voltage level
@@ -180,22 +182,7 @@ export function runLocalShortcircuit(
     const starId = trNode.id + '_STAR'
     const si     = nodeToIdxFull.get(starId)!
 
-    // 연결 버스 탐색 (양방향 엣지 처리)
-    const connBusIds: string[] = []
-    for (const edge of edges) {
-      if (!edge.data?.cable?.in_service) continue
-      if (edge.source !== trNode.id && edge.target !== trNode.id) continue
-      const otherId = edge.source === trNode.id ? edge.target : edge.source
-      const busId = nodeMap.get(otherId)?.type === 'bus'
-        ? otherId
-        : findConnectedBusId(otherId, nodes, edges)
-      if (busId && !connBusIds.includes(busId)) connBusIds.push(busId)
-    }
-
-    const sorted = connBusIds
-      .map(id => ({ id, vn: (nodeMap.get(id)?.data.equipment as Bus).vn_kv ?? 0 }))
-      .sort((a, b) => b.vn - a.vn)
-    const [hvId, mvId, lvId] = sorted.map(p => p.id)
+    const { hvId, mvId, lvId } = find3WTransformerBuses(trNode.id, nodes, edges)
     if (!hvId || !mvId || !lvId) continue
 
     const hi = nodeToIdxFull.get(hvId)

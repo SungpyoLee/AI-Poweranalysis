@@ -9,13 +9,20 @@
 import type { Node, Edge } from 'reactflow'
 import type { NodeData, EdgeData, Breaker, Transformer, RelayResult, RelayCurveType } from '../types'
 
-// ── IEC 60255 formula (local copy — keeps engine pure) ────────────────────────
+// ── IEC 60255 + ANSI/IEEE C37.112 formula (local copy — keeps engine pure) ────
 function iecTime(M: number, tms: number, curve: RelayCurveType): number | null {
   if (M <= 1.0) return null
   switch (curve) {
+    // IEC 60255
     case 'IEC_NORMAL_INVERSE':    return (0.14  * tms) / (Math.pow(M, 0.02) - 1)
     case 'IEC_VERY_INVERSE':      return (13.5  * tms) / (M - 1)
     case 'IEC_EXTREMELY_INVERSE': return (80    * tms) / (M * M - 1)
+    // ANSI/IEEE C37.112
+    case 'ANSI_MODERATELY_INVERSE': return tms * (0.0515 / (Math.pow(M, 0.02) - 1) + 0.114)
+    case 'ANSI_INVERSE':            return tms * (19.61  / (M * M - 1) + 0.491)
+    case 'ANSI_VERY_INVERSE':       return tms * (28.2   / (M * M - 1) + 0.1217)
+    case 'ANSI_EXTREMELY_INVERSE':  return tms * (29.1   / (M * M - 1) + 0.1217)
+    case 'ANSI_SHORT_INVERSE':      return tms * (0.0086 / (Math.pow(M, 0.02) - 1) + 0.0228)
     default: return null
   }
 }

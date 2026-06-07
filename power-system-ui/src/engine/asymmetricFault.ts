@@ -20,7 +20,7 @@ import type { NodeData, EdgeData, Bus, Transformer, ThreeWindingTransformer, Cab
 import { C, type Complex } from './complex'
 import { S_BASE } from './ybus'
 import { complexMatInv } from './complexMatrix'
-import { findTransformerBuses, findConnectedBusId } from '../utils/graphTraversal'
+import { findTransformerBuses, find3WTransformerBuses } from '../utils/graphTraversal'
 
 export interface BusAsymResult {
   nodeId:    string
@@ -86,20 +86,7 @@ function buildY1(
   const tr3wNodes = nodes.filter(nd => nd.type === 'transformer3w' && nd.data.equipment.in_service)
   for (const trNode of tr3wNodes) {
     const eq = trNode.data.equipment as ThreeWindingTransformer
-    // 연결 버스 탐색 (양방향)
-    const connBusIds: string[] = []
-    for (const e of edges) {
-      if (!e.data?.cable?.in_service) continue
-      if (e.source !== trNode.id && e.target !== trNode.id) continue
-      const otherId = e.source === trNode.id ? e.target : e.source
-      const busId = nodeMap.get(otherId)?.type === 'bus'
-        ? otherId : findConnectedBusId(otherId, nodes, edges)
-      if (busId && !connBusIds.includes(busId)) connBusIds.push(busId)
-    }
-    const sorted = connBusIds
-      .map(id => ({ id, vn: (nodeMap.get(id)?.data.equipment as Bus).vn_kv ?? 0 }))
-      .sort((a, b) => b.vn - a.vn)
-    const [hvId, mvId, lvId] = sorted.map(s => s.id)
+    const { hvId, mvId, lvId } = find3WTransformerBuses(trNode.id, nodes, edges)
     if (!hvId || !mvId || !lvId) continue
     const hi = nodeToIdx.get(hvId); const mi = nodeToIdx.get(mvId); const li = nodeToIdx.get(lvId)
     if (hi === undefined || mi === undefined || li === undefined) continue
@@ -230,19 +217,7 @@ function buildY0(
   const tr3wNodes0 = nodes.filter(nd => nd.type === 'transformer3w' && nd.data.equipment.in_service)
   for (const trNode of tr3wNodes0) {
     const eq = trNode.data.equipment as ThreeWindingTransformer
-    const connBusIds: string[] = []
-    for (const e of edges) {
-      if (!e.data?.cable?.in_service) continue
-      if (e.source !== trNode.id && e.target !== trNode.id) continue
-      const otherId = e.source === trNode.id ? e.target : e.source
-      const busId = nodeMap.get(otherId)?.type === 'bus'
-        ? otherId : findConnectedBusId(otherId, nodes, edges)
-      if (busId && !connBusIds.includes(busId)) connBusIds.push(busId)
-    }
-    const sorted = connBusIds
-      .map(id => ({ id, vn: (nodeMap.get(id)?.data.equipment as Bus).vn_kv ?? 0 }))
-      .sort((a, b) => b.vn - a.vn)
-    const [, mvId, lvId] = sorted.map(s => s.id)
+    const { mvId, lvId } = find3WTransformerBuses(trNode.id, nodes, edges)
     // MV + LV winding: shunt to ground (zero sequence current path via grounded neutral)
     for (const [busId, Sn, vkrP, vkP] of [
       [mvId, eq.sn_mv_mva, eq.vkr_mv_percent, Math.sqrt(Math.max(eq.vk_mv_percent**2 - eq.vkr_mv_percent**2, 0))],

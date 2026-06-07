@@ -7,7 +7,7 @@ import type { Node, Edge } from 'reactflow'
 import type {
   NodeData, EdgeData, Bus, Transformer, Breaker, Motor, Load,
   LoadflowResults, HarmonicResults, HarmonicBusResult, HarmonicSourceResult,
-  HarmonicSource,
+  HarmonicSource, CapacitorBank, Reactor,
 } from '../types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -300,6 +300,33 @@ export function computeHarmonics(
         // Generator bus: stiff voltage source → large shunt admittance
         Y[i][i] = cadd(Y[i][i], [50, 0])
       }
+    }
+
+    // Shunt capacitor banks: Y_cap(h) = +j·h·B_cap  (B_cap = Q/S_BASE at V=1 pu)
+    // Capacitive shunts cause parallel resonance with system inductance — critical for THD.
+    for (const node of nodes) {
+      if (node.type !== 'capacitor' || !node.data.equipment.in_service) continue
+      const cap   = node.data.equipment as CapacitorBank
+      const busId = resolveTobus(node.id, '', nodeMap, edgesByNode)
+      if (!busId) continue
+      const i = busIndex.get(busId)
+      if (i === undefined) continue
+      const Qeff = cap.qn_mvar * (cap.step_enabled / Math.max(cap.steps, 1))
+      if (Qeff <= 0) continue
+      Y[i][i] = cadd(Y[i][i], [0, h * Qeff / SBASE])
+    }
+
+    // Shunt reactors: Y_reactor(h) = −j / (h·X_L)  (X_L = Q/S_BASE at V=1 pu)
+    for (const node of nodes) {
+      if (node.type !== 'reactor' || !node.data.equipment.in_service) continue
+      const react = node.data.equipment as Reactor
+      if (!react.is_shunt || react.qn_mvar <= 0) continue
+      const busId = resolveTobus(node.id, '', nodeMap, edgesByNode)
+      if (!busId) continue
+      const i = busIndex.get(busId)
+      if (i === undefined) continue
+      const X_L_pu = react.qn_mvar / SBASE   // fundamental reactance in pu
+      Y[i][i] = cadd(Y[i][i], [0, -1 / (h * X_L_pu)])
     }
 
     // Build injection vector I(h)

@@ -309,20 +309,21 @@ export function runLocalLoadflow(
     const tS = solvedState.get(edge.target)
     if (!fS || !tS) continue
 
-    const cable    = edge.data.cable as Cable
-    const len_km   = cable.length_m / 1000
-    const V_from_kv = (srcNode.data.equipment as Bus).vn_kv
-    const Z_base   = (V_from_kv * V_from_kv) / S_BASE
-    const R_pu     = (cable.r_ohm_per_km * len_km) / Z_base
-    const X_pu     = (cable.x_ohm_per_km * len_km) / Z_base
-    const denom    = R_pu * R_pu + X_pu * X_pu
+    const cable      = edge.data.cable as Cable
+    const par        = Math.max(cable.parallel ?? 1, 1)
+    const len_km     = cable.length_m / 1000
+    const V_from_kv  = (srcNode.data.equipment as Bus).vn_kv
+    const Z_base     = (V_from_kv * V_from_kv) / S_BASE
+    const R_pu       = (cable.r_ohm_per_km * len_km) / Z_base / par
+    const X_pu       = (cable.x_ohm_per_km * len_km) / Z_base / par
+    const denom      = R_pu * R_pu + X_pu * X_pu
     if (denom < 1e-12) continue
 
     const g_s = R_pu / denom
     const b_s = -X_pu / denom   // negative (inductive)
 
-    const B_pu       = (cable.c_nf_per_km * len_km * 1e-9) * 2 * Math.PI * 60 * Z_base
-    const B_sh_half  = B_pu / 2  // per-end capacitive susceptance
+    const B_pu      = (cable.c_nf_per_km * len_km * 1e-9) * 2 * Math.PI * frequency_hz * par * Z_base
+    const B_sh_half = B_pu / 2  // per-end capacitive susceptance (all parallel runs)
 
     const Vf = fS.V
     const Vt = tS.V
@@ -345,7 +346,7 @@ export function runLocalLoadflow(
     const S_from_pu = Math.sqrt(P_from * P_from + Q_from * Q_from)
     const i_ka      = (S_from_pu / Vf) * I_base_kA
 
-    const loading_percent = cable.max_i_ka > 0 ? (i_ka / cable.max_i_ka) * 100 : 0
+    const loading_percent = cable.max_i_ka > 0 ? (i_ka / (par * cable.max_i_ka)) * 100 : 0
     const vdrop_percent   = Vf > 0 ? (Vf - Vt) / Vf * 100 : 0
 
     lines[edge.id] = {

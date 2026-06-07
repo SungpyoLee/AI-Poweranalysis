@@ -41,7 +41,7 @@ export function runMotorStartingAnalysis(
   const slackBusId = detectSlackBus(nodes, edges)
   if (!slackBusId) return results
 
-  const { Y, busOrder } = buildYBus(nodes, edges)
+  const { Y, busOrder, virtualIds } = buildYBus(nodes, edges)
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
 
   // equipmentByBus: busId → non-bus, non-breaker, non-transformer nodes
@@ -68,13 +68,20 @@ export function runMotorStartingAnalysis(
     const running_current_a  = (p_run_mw * 1e6) / (Math.sqrt(3) * eq.vn_kv * 1000 * pf)
 
     // ── Starting condition: Istart = Irated × multiplier ───────────────────
+    // Starting PF is much lower than running PF (IEC 60034 / NEMA MG-1 typical values).
+    // VFD controls the current actively → rated PF maintained throughout start.
+    const pf_start =
+      eq.starting_method === 'VFD'          ? pf  :
+      eq.starting_method === 'Soft-Starter' ? 0.30 :
+      eq.starting_method === 'Star-Delta'   ? 0.20 :
+      0.15  // DOL
     const start_current_a = running_current_a * eq.starting_current_multiple
     const start_mva       = Math.sqrt(3) * eq.vn_kv * (start_current_a / 1000)
-    const p_start_mw      = start_mva * pf
-    const q_start_mvar    = start_mva * Math.sin(Math.acos(pf))
+    const p_start_mw      = start_mva * pf_start
+    const q_start_mvar    = start_mva * Math.sqrt(Math.max(1 - pf_start * pf_start, 0))
 
     // ── Build bus injections (this motor → starting, others → running) ────
-    const busInputs: BusInput[] = busOrder.map((busId) => {
+    const realInputs: BusInput[] = busOrder.map((busId) => {
       const busEq = nodeMap.get(busId)!.data.equipment as Bus
       let P_inject = 0
       let Q_inject = 0
@@ -137,6 +144,21 @@ export function runMotorStartingAnalysis(
         q_max:  busType === 'PV' ? q_max_pu :  Infinity,
       }
     })
+
+    // 3권선 변압기 가상 성형점(star node)을 PQ(0,0) 부동 노드로 추가.
+    // Y 행렬은 realBuses + virtualNodes 크기이므로 busInputs도 동일하게 맞춰야 함.
+    // 미추가 시 bus-66/bus-util처럼 star node를 통해서만 연결된 버스의
+    // 야코비안 대각 원소가 0이 돼 Singular Jacobian 발생.
+    const busInputs: BusInput[] = [
+      ...realInputs,
+      ...virtualIds.map(vid => ({
+        nodeId: vid,
+        type:   'PQ' as const,
+        V: 1.0, theta: 0,
+        P_spec: 0, Q_spec: 0,
+        q_min: -Infinity, q_max: Infinity,
+      })),
+    ]
 
     const nr = nrSolve(Y, busInputs)
     const busResult          = nr.buses.find(b => b.nodeId === connBusId)
