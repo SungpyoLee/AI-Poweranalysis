@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EPC 전기설계 시뮬레이션 리포트 | PowerFlow Analyzer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', 'Malgun Gothic', Arial, sans-serif;
+    background: #f0f2f5; color: #1a2030;
+    padding: 24px; min-height: 100vh;
+  }
+  .page { max-width: 1100px; margin: 0 auto; }
+
+  .header {
+    background: linear-gradient(135deg, #0f2a60 0%, #1a4a9a 100%);
+    color: white; padding: 28px 32px; border-radius: 6px;
+    margin-bottom: 24px; display: flex; align-items: flex-start; justify-content: space-between;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; }
+  .header .sub { font-size: 13px; opacity: 0.7; margin-top: 6px; }
+  .header .badge { background: rgba(255,255,255,0.15); padding: 4px 12px;
+    border-radius: 3px; font-size: 11px; font-weight: 700; margin-top: 8px; display: inline-block; }
+  .stamp { text-align: right; font-size: 11px; opacity: 0.7; line-height: 2; }
+
+  .section { background: white; border: 1px solid #d0d8e4; border-radius: 4px;
+    margin-bottom: 20px; overflow: hidden; }
+  .sec-header {
+    background: linear-gradient(to right, #e8eef8, #f4f6fa);
+    padding: 10px 18px; border-bottom: 2px solid #c0ccd8;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .sec-header h2 { font-size: 13px; font-weight: 700; color: #1a2a4a; }
+  .sec-header .badge-h {
+    font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 2px; text-transform: uppercase;
+  }
+  .sec-body { padding: 16px 18px; }
+
+  /* SLD 다이어그램 */
+  .sld { font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.9;
+    background: #f8f9fb; border: 1px solid #dde4ec; border-radius: 3px;
+    padding: 14px 18px; color: #1a2030; }
+
+  /* 테이블 */
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { background: #d4dae2; padding: 5px 9px; text-align: left; font-size: 10px;
+    font-weight: 700; color: #2a3a4a; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 5px 9px; border-bottom: 1px solid #e8ecf0; }
+  tr:hover td { background: #f4f7fc; }
+  .ok   { color: #005a20; font-weight: 700; }
+  .warn { color: #8a5a00; font-weight: 700; }
+  .fail { color: #b02000; font-weight: 700; }
+  .num  { font-family: 'Consolas', monospace; text-align: right; }
+  .rt   { text-align: right; }
+
+  /* 결과 카드 */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .card {
+    border: 1px solid #d0d8e4; border-radius: 3px; padding: 12px 16px;
+    background: #fafbfc;
+  }
+  .card .val { font-size: 22px; font-weight: 700; font-family: 'Consolas', monospace; margin: 4px 0; }
+  .card .label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.07em; color: #7a8898; }
+  .card .sub-val { font-size: 10px; color: #6a7888; font-family: 'Consolas', monospace; }
+  .green { border-left: 4px solid #40a060; }
+  .amber { border-left: 4px solid #c8a000; }
+  .red   { border-left: 4px solid #c04040; }
+  .blue  { border-left: 4px solid #1a5a9a; }
+
+  /* 발견 사항 */
+  .finding {
+    border-left: 4px solid; padding: 10px 14px; margin-bottom: 10px;
+    border-radius: 0 3px 3px 0;
+  }
+  .finding.critical { border-color: #c04040; background: #fff0f0; }
+  .finding.warning  { border-color: #c8a000; background: #fff8e0; }
+  .finding.info     { border-color: #1a5a9a; background: #e8f0ff; }
+  .finding.ok       { border-color: #40a060; background: #e8f8ee; }
+  .finding .tag {
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; margin-bottom: 5px;
+  }
+  .finding.critical .tag { color: #c04040; }
+  .finding.warning  .tag { color: #c8a000; }
+  .finding.info     .tag { color: #1a5a9a; }
+  .finding.ok       .tag { color: #40a060; }
+  .finding p { font-size: 11px; color: #2a3040; line-height: 1.7; }
+  .finding strong { color: #1a2030; }
+  .finding code {
+    font-family: 'Consolas', monospace; background: rgba(0,0,0,0.05);
+    padding: 1px 4px; border-radius: 2px; font-size: 10.5px;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+
+  .footer { text-align: center; font-size: 10px; color: #9aaabb; padding: 16px 0;
+    font-family: 'Consolas', monospace; }
+
+  /* 우선순위 테이블 */
+  .pri { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 9px; font-weight: 700; }
+  .p0 { background: #fde8e8; color: #b02000; }
+  .p1 { background: #fff3c0; color: #8a5a00; }
+  .p2 { background: #e8f0ff; color: #1a3a7a; }
+
+  .bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .bar-bg { height: 8px; flex: 1; background: #e8ecf0; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-num { font-family: 'Consolas', monospace; font-size: 10px; min-width: 40px; text-align: right; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ───────── HEADER ───────── -->
+<div class="header">
+  <div>
+    <h1>⚡ EPC 전기설계 시뮬레이션 리포트</h1>
+    <div class="sub">PowerFlow Analyzer — 화학플랜트 유틸리티 수변전 시스템</div>
+    <div class="badge">IEC 60909 · IEC 60076 · IEEE 1584 기준</div>
+  </div>
+  <div class="stamp">
+    시뮬레이션 일자: 2026-05-28<br>
+    작성자: EPC 전기설계팀<br>
+    System: Chemical Plant #1<br>
+    Revision: R0 (Initial Study)
+  </div>
+</div>
+
+<!-- ───────── SLD ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>1. 단선도 (Single Line Diagram)</h2>
+    <span class="badge-h" style="background:#d8e8ff;color:#1a3a7a">System Layout</span>
+  </div>
+  <div class="sec-body">
+    <div class="sld">
+154kV Grid (Sk''=5,000MVA, X/R=10)
+│
+├─[CB-HV]──▣ TR-MAIN  154/22.9kV  30MVA  Vk=12.0%  Vkr=0.5%
+│               │
+│         ══════════════════════════════════════  22.9kV SWGR (Main MV Bus)
+│               │               │                │
+│          [CB-101]         [CB-102]         [CB-103]
+│               │               │                │
+│         CM-101 (VFD)    PP-101 (DOL)     ▣ TR-MCC1  22.9/0.38kV  2MVA  Vk=6.0%
+│         2,000kW 22.9kV  1,500kW 22.9kV       │
+│         PF=0.86  eff=94% PF=0.85  eff=93%  ══════════  0.38kV MCC-A Bus
+│                                              │       │       │
+│                                         [CB-201] [CB-202] [CB-203]
+│                                              │       │       │
+│                                       PP-201      FAN-201   PP-202
+│                                       75kW Y-Δ    45kW DOL  30kW DOL
+│                                       PF=0.85     PF=0.82   PF=0.84
+│
+└─[CB-EMG]──G-EMG  1,500kVA  0.38kV  (비상발전기, 정상시 개방)
+    </div>
+    <p style="font-size:10px;color:#7a8898;margin-top:8px;font-family:'Segoe UI',sans-serif;">
+      ▣ = Transformer Node &nbsp;|&nbsp; ══ = Bus Bar &nbsp;|&nbsp; [CB] = Circuit Breaker
+    </p>
+  </div>
+</div>
+
+<!-- ───────── KEY SUMMARY ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>2. 주요 결과 요약</h2>
+    <span class="badge-h" style="background:#d8f4e4;color:#005a20">Load Flow + Short Circuit</span>
+  </div>
+  <div class="sec-body">
+    <div class="card-grid">
+      <div class="card green">
+        <div class="label">22.9kV 모선 전압 (정격부하)</div>
+        <div class="val" style="color:#005a20">0.9981 pu</div>
+        <div class="sub-val">22.86 kV · 기준 ±5% 이내 ✓</div>
+      </div>
+      <div class="card amber">
+        <div class="label">0.38kV MCC-A 전압 (정격부하)</div>
+        <div class="val" style="color:#8a5a00">0.9714 pu</div>
+        <div class="sub-val">369.1 V · 경고: 2.86% 전압강하</div>
+      </div>
+      <div class="card blue">
+        <div class="label">TR-MAIN 부하율</div>
+        <div class="val" style="color:#1a5a9a">17.6 %</div>
+        <div class="sub-val">5.28 MVA / 30 MVA · 여유 충분</div>
+      </div>
+      <div class="card amber">
+        <div class="label">TR-MCC1 부하율</div>
+        <div class="val" style="color:#8a5a00">12.1 %</div>
+        <div class="sub-val">0.242 MVA / 2 MVA</div>
+      </div>
+      <div class="card red">
+        <div class="label">22.9kV Ik'' (단락전류)</div>
+        <div class="val" style="color:#b02000">9.24 kA</div>
+        <div class="sub-val">CB-101/102 정격 25kA → PASS</div>
+      </div>
+      <div class="card amber">
+        <div class="label">0.38kV Ik'' (단락전류)</div>
+        <div class="val" style="color:#8a5a00">22.8 kA</div>
+        <div class="sub-val">CB-201~203 정격 36kA → PASS</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── LOAD FLOW ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>3. 조류계산 결과 (Load Flow — IEC 60364)</h2>
+    <span class="badge-h" style="background:#d8f4e4;color:#005a20">Newton-Raphson · Converged (4 iter)</span>
+  </div>
+  <div class="sec-body">
+    <div class="two-col">
+      <!-- Bus -->
+      <div>
+        <p style="font-size:10px;font-weight:700;color:#3a4a5a;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">
+          Bus Voltage Profile
+        </p>
+        <table>
+          <thead><tr><th>Bus</th><th>kV</th><th>Vm (pu)</th><th>Va (°)</th><th>P (MW)</th><th>Q (Mvar)</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>154kV Main</td><td class="num">154</td>
+              <td class="num ok">1.0000</td><td class="num">0.000</td>
+              <td class="num">-5.28</td><td class="num">-3.11</td>
+              <td class="ok">SLACK</td>
+            </tr>
+            <tr>
+              <td>22.9kV SWGR</td><td class="num">22.9</td>
+              <td class="num ok">0.9981</td><td class="num">-1.82</td>
+              <td class="num">5.23</td><td class="num">3.07</td>
+              <td class="ok">✓ PASS</td>
+            </tr>
+            <tr>
+              <td>0.38kV MCC-A</td><td class="num">0.38</td>
+              <td class="num warn">0.9714</td><td class="num">-4.28</td>
+              <td class="num">0.177</td><td class="num">0.104</td>
+              <td class="warn">⚠ WARN</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="font-size:9.5px;color:#8a9aaa;margin-top:6px">
+          기준: 0.95 pu ≤ V ≤ 1.05 pu / 경보: 0.97 pu 미만
+        </p>
+      </div>
+      <!-- Transformer -->
+      <div>
+        <p style="font-size:10px;font-weight:700;color:#3a4a5a;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">
+          Transformer Loading
+        </p>
+        <table>
+          <thead><tr><th>Transformer</th><th>Rating</th><th>Loading</th><th>손실(kW)</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>TR-MAIN</td><td class="num">30 MVA</td>
+              <td>
+                <div class="bar-wrap">
+                  <div class="bar-bg"><div class="bar-fill" style="width:17.6%;background:#2e9a50"></div></div>
+                  <div class="bar-num ok">17.6%</div>
+                </div>
+              </td>
+              <td class="num">68.4</td>
+              <td class="ok">✓ OK</td>
+            </tr>
+            <tr>
+              <td>TR-MCC1</td><td class="num">2 MVA</td>
+              <td>
+                <div class="bar-wrap">
+                  <div class="bar-bg"><div class="bar-fill" style="width:12.1%;background:#2e9a50"></div></div>
+                  <div class="bar-num ok">12.1%</div>
+                </div>
+              </td>
+              <td class="num">3.2</td>
+              <td class="ok">✓ OK</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p style="font-size:10px;font-weight:700;color:#3a4a5a;margin:14px 0 8px;text-transform:uppercase;letter-spacing:.05em">
+          Motor Operating Current
+        </p>
+        <table>
+          <thead><tr><th>Motor</th><th>kW</th><th>I_run (A)</th><th>PF</th><th>P_in (kW)</th></tr></thead>
+          <tbody>
+            <tr><td>CM-101</td><td class="num">2,000</td><td class="num">63.1</td><td class="num">0.86</td><td class="num">2,128</td></tr>
+            <tr><td>PP-101</td><td class="num">1,500</td><td class="num">48.6</td><td class="num">0.85</td><td class="num">1,613</td></tr>
+            <tr><td>PP-201</td><td class="num">75</td><td class="num">148.0</td><td class="num">0.85</td><td class="num">83.3</td></tr>
+            <tr><td>FAN-201</td><td class="num">45</td><td class="num">93.8</td><td class="num">0.82</td><td class="num">51.1</td></tr>
+            <tr><td>PP-202</td><td class="num">30</td><td class="num">61.0</td><td class="num">0.84</td><td class="num">34.5</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── SHORT CIRCUIT ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>4. 단락계산 결과 (IEC 60909)</h2>
+    <span class="badge-h" style="background:#fde8e8;color:#8a0000">3-Phase Balanced · c = 1.1</span>
+  </div>
+  <div class="sec-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Bus</th><th>Vn (kV)</th><th>Ik'' (kA)</th><th>Ip (kA)</th>
+          <th>Sk'' (MVA)</th><th>CB 정격 (kA)</th><th>여유율</th><th>판정</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>154kV Main</td><td class="num">154</td>
+          <td class="num fail">18.73</td><td class="num">47.6</td>
+          <td class="num">5,000</td>
+          <td class="num">40</td>
+          <td class="num ok">+113%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+        <tr>
+          <td>22.9kV SWGR</td><td class="num">22.9</td>
+          <td class="num ok">9.24</td><td class="num">23.4</td>
+          <td class="num">366</td>
+          <td class="num">25</td>
+          <td class="num ok">+171%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+        <tr>
+          <td>0.38kV MCC-A</td><td class="num">0.38</td>
+          <td class="num warn">22.8</td><td class="num">57.9</td>
+          <td class="num">15.0</td>
+          <td class="num">36</td>
+          <td class="num warn">+58%</td>
+          <td class="warn">⚠ 주의</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:9.5px;color:#8a9aaa;margin-top:6px">
+      ※ 154kV Bus의 Ik''=18.73kA는 계통 Grid 5,000MVA 에서 직접 계산.
+      0.38kV Bus Ip=57.9kA — 부스바 열·기계 강도 검토 필요 (IEC 60865).
+    </p>
+  </div>
+</div>
+
+<!-- ───────── MOTOR STARTING ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>5. 전동기 기동해석 (Motor Starting Analysis)</h2>
+    <span class="badge-h" style="background:#fff3c0;color:#8a5a00">Critical: PP-101 DOL Start</span>
+  </div>
+  <div class="sec-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Motor</th><th>kW / kV</th><th>기동방식</th>
+          <th>기동 MVA</th><th>I_start (A)</th>
+          <th>기동 시 V (pu)</th><th>전압강하</th><th>판정 (≥0.85 PASS)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>PP-101</strong></td>
+          <td class="num">1,500 / 22.9</td>
+          <td><span class="pri p0">DOL</span></td>
+          <td class="num warn">10.6</td>
+          <td class="num warn">316.0</td>
+          <td class="num warn">0.826</td>
+          <td class="num fail">-17.4%</td>
+          <td class="fail">✗ FAIL</td>
+        </tr>
+        <tr>
+          <td>CM-101</td>
+          <td class="num">2,000 / 22.9</td>
+          <td><span class="pri p2">VFD</span></td>
+          <td class="num ok">2.13</td>
+          <td class="num ok">63.1</td>
+          <td class="num ok">0.993</td>
+          <td class="num ok">-0.7%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+        <tr>
+          <td>PP-201</td>
+          <td class="num">75 / 0.38</td>
+          <td><span class="pri p1">Y-Δ</span></td>
+          <td class="num ok">0.090</td>
+          <td class="num ok">160.0</td>
+          <td class="num ok">0.968</td>
+          <td class="num ok">-3.2%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+        <tr>
+          <td>FAN-201</td>
+          <td class="num">45 / 0.38</td>
+          <td><span class="pri p1">DOL</span></td>
+          <td class="num ok">0.054</td>
+          <td class="num ok">178.0</td>
+          <td class="num ok">0.971</td>
+          <td class="num ok">-2.9%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+        <tr>
+          <td>PP-202</td>
+          <td class="num">30 / 0.38</td>
+          <td><span class="pri p1">DOL</span></td>
+          <td class="num ok">0.036</td>
+          <td class="num ok">116.0</td>
+          <td class="num ok">0.973</td>
+          <td class="num ok">-2.7%</td>
+          <td class="ok">✓ PASS</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:9.5px;color:#b02000;margin-top:8px;font-weight:700">
+      ⚠ PP-101 (1,500kW) DOL 기동 시 전압강하 17.4% → 기준치(15%) 초과. 기동방식 변경 필요.
+    </p>
+  </div>
+</div>
+
+<!-- ───────── CABLE SIZING ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>6. 케이블 적정성 검토 (IEC 60364 / IEC 60228)</h2>
+    <span class="badge-h" style="background:#e8f0ff;color:#1a3a7a">Ampacity · Voltage Drop · SC Withstand</span>
+  </div>
+  <div class="sec-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Cable ID</th><th>Route</th>
+          <th>Load I (A)</th><th>Ampacity (A)</th><th>부하율</th>
+          <th>ΔV (%)</th><th>기준</th><th>판정</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>F102-Motor</td><td>CB-102 → PP-101</td>
+          <td class="num warn">48.6</td><td class="num">360</td>
+          <td class="num ok">13.5%</td>
+          <td class="num ok">1.84%</td><td class="num">5%</td>
+          <td class="ok">✓ OK</td>
+        </tr>
+        <tr>
+          <td>F101-Motor</td><td>CB-101 → CM-101</td>
+          <td class="num ok">63.1</td><td class="num">450</td>
+          <td class="num ok">14.0%</td>
+          <td class="num ok">2.41%</td><td class="num">5%</td>
+          <td class="ok">✓ OK</td>
+        </tr>
+        <tr>
+          <td>LV-F201</td><td>MCC-A → CB-201</td>
+          <td class="num ok">148.0</td><td class="num">250</td>
+          <td class="num warn">59.2%</td>
+          <td class="num warn">2.91%</td><td class="num">3%</td>
+          <td class="warn">⚠ WARN</td>
+        </tr>
+        <tr>
+          <td>F201-Motor</td><td>CB-201 → PP-201</td>
+          <td class="num ok">148.0</td><td class="num">250</td>
+          <td class="num warn">59.2%</td>
+          <td class="num warn">2.75%</td><td class="num">3%</td>
+          <td class="warn">⚠ WARN</td>
+        </tr>
+        <tr>
+          <td>LV-F202</td><td>MCC-A → FAN-201</td>
+          <td class="num ok">93.8</td><td class="num">180</td>
+          <td class="num ok">52.1%</td>
+          <td class="num ok">1.98%</td><td class="num">3%</td>
+          <td class="ok">✓ OK</td>
+        </tr>
+        <tr>
+          <td>LV-F203</td><td>MCC-A → PP-202</td>
+          <td class="num ok">61.0</td><td class="num">150</td>
+          <td class="num ok">40.7%</td>
+          <td class="num ok">1.63%</td><td class="num">3%</td>
+          <td class="ok">✓ OK</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:9.5px;color:#8a5a00;margin-top:6px">
+      ※ LV-F201 / F201-Motor: 전압강하 합산 5.66% (PP-201 단자전압 0.9429 pu) — MCC 버스 전압강하와 합산 시 허용치 초과 가능.
+    </p>
+  </div>
+</div>
+
+<!-- ───────── FINDINGS ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>7. 엔지니어링 발견 사항 및 권고 (EPC Design Review)</h2>
+    <span class="badge-h" style="background:#fde8e8;color:#8a0000">3 Critical · 4 Warning · 5 Info</span>
+  </div>
+  <div class="sec-body">
+
+    <div class="finding critical">
+      <div class="tag">🔴 Critical #1 — PP-101 기동방식 변경 필수</div>
+      <p>
+        <strong>PP-101 (1,500kW, 22.9kV) DOL 기동 시 전압강하 17.4%</strong>로 IEC 60034-1 권고치(15%)를 초과합니다.
+        동시에 22.9kV 모선에 연결된 다른 모터 및 제어계통의 오동작 위험이 있습니다.<br>
+        <strong>권고:</strong> <code>DOL → Star-Delta</code> 또는 <code>Soft-Starter</code>로 변경.
+        Star-Delta 적용 시 기동전류 1/3 → 전압강하 ~5.8% 예상.
+        공정 측 토크요구사항(≥85% full-load torque at start) 확인 후 결정.
+      </p>
+    </div>
+
+    <div class="finding critical">
+      <div class="tag">🔴 Critical #2 — 0.38kV 버스 전압강하 경고</div>
+      <p>
+        0.38kV MCC-A 버스 전압이 <strong>0.9714 pu (369 V)</strong>로
+        정격 380V 대비 2.86% 낮습니다. PP-201 모터 케이블 전압강하까지 합산하면
+        PP-201 단자 전압은 <strong>0.9429 pu (358 V)</strong> — IEC 60034 권고 ±10% 이내이나
+        운전 마진이 매우 좁습니다.<br>
+        <strong>권고:</strong> TR-MCC1 탭 위치를 <code>tap_pos = +1</code> (0.38→0.38+2.5%=0.3895 kV)로
+        조정하여 MCC 버스 전압을 약 1.0 pu로 올림.
+      </p>
+    </div>
+
+    <div class="finding critical">
+      <div class="tag">🔴 Critical #3 — 154kV 계통연계 Breaker 용량 검토</div>
+      <p>
+        154kV Main Bus의 <strong>Ik'' = 18.73 kA, Ip = 47.6 kA</strong>입니다.
+        현재 설정된 CB-HV 정격 40kA 는 Ik'' 기준으로는 PASS이나
+        <strong>Peak Current Ip = 47.6 kA &gt; CB making capacity 추정값</strong>일 수 있습니다.
+        IEC 62271-100 §4.102: Icm ≥ 2.5 × √2 × Ik'' = 66.2 kA 요구.<br>
+        <strong>권고:</strong> 154kV GIS/AIS CB의 Making capacity (Icm) 를
+        카탈로그에서 재확인. 일반적으로 최소 80 kA 이상 제품 선정 필요.
+      </p>
+    </div>
+
+    <div class="finding warning">
+      <div class="tag">⚠ Warning #4 — TR-MCC1 보호 협조 검토 필요</div>
+      <p>
+        TR-MCC1 (2 MVA) 2차 측 단락전류 <strong>22.8 kA</strong>에 대해
+        CB-201~CB-203 (MCCB, 36kA) 은 용량 충족이나,
+        CB-103 (VCB, 25kA)의 1차 측 단락전류 환산값 = 22.8 × (0.38/22.9) = 0.378 kA 이므로
+        VCB 통과전류 기준은 문제없음. 단, <strong>계전기 협조 시간 마진</strong>이
+        CB-103 (TMS=0.2) → CB-201 (TMS=0.1) 간 0.3초 이상 확보 여부 TCC Viewer로 확인 권고.
+      </p>
+    </div>
+
+    <div class="finding warning">
+      <div class="tag">⚠ Warning #5 — 0.38kV 부스바 열·기계 강도</div>
+      <p>
+        0.38kV MCC-A 부스바 최대 피크전류 <strong>Ip = 57.9 kA</strong>.
+        IEC 60865-1에 따른 부스바 기계강도 검토 필요.
+        일반 표준 MCC 부스바 (63kA 1초 열강도 등급) 적용 시 통상 만족하나,
+        도면에 <strong>부스바 규격(mm²), 지지간격(mm), Icw 1s</strong> 명시 필요.
+      </p>
+    </div>
+
+    <div class="finding warning">
+      <div class="tag">⚠ Warning #6 — PP-201 케이블 전압강하 누적</div>
+      <p>
+        MCC 버스 2.86% + LV-F201 2.91% + F201-Motor 2.75% =
+        <strong>누적 전압강하 8.52%</strong> (PP-201 단자기준).
+        IEC 60364-5-52 권고치 5% 초과. 케이블 단면적 증가 또는 TR 탭 조정 병행 필요.
+      </p>
+    </div>
+
+    <div class="finding warning">
+      <div class="tag">⚠ Warning #7 — 무효전력 보상 미적용</div>
+      <p>
+        전체 시스템 역률: P = 5.23 MW, Q = 3.07 Mvar → <strong>PF = 0.863</strong>.
+        한전 역률 기준 0.95 미만 시 전기요금 할증(역률요금) 적용.
+        22.9kV 모선에 <strong>1,200~1,500 kvar</strong> 콘덴서 설치 검토 (PF 개선 후 약 0.95).
+      </p>
+    </div>
+
+    <div class="finding info">
+      <div class="tag">ℹ Info #8 — 비상발전기 용량 검토</div>
+      <p>
+        G-EMG (1,500 kVA) 비상전원 공급 대상 부하를 정의하지 않았습니다.
+        일반적으로 EPC 프로젝트에서 비상부하 = 안전계장계통 + 비상조명 + 소화펌프.
+        <strong>비상부하 목록(Essential Load List)</strong> 작성 후 용량 재검토 권고.
+      </p>
+    </div>
+
+    <div class="finding info">
+      <div class="tag">ℹ Info #9 — CM-101 VFD 고조파</div>
+      <p>
+        CM-101 (2,000kW VFD)은 고조파 전류원입니다.
+        IEEE 519 기준 22.9kV 버스 THDv 한계 5%.
+        VFD 사양에서 <strong>h5=15%, h7=8%, h11=5%, h13=4%</strong> 수준이 일반적.
+        고조파 해석(Harmonics Analysis) 별도 수행 권고. 필요 시 12-pulse 구성 또는 Active Filter 검토.
+      </p>
+    </div>
+
+    <div class="finding info">
+      <div class="tag">ℹ Info #10 — Arc Flash 분석 미수행</div>
+      <p>
+        22.9kV 및 0.38kV 버스에 대한 <strong>Arc Flash 분석 (IEEE 1584)</strong>이
+        수행되지 않았습니다. 단락전류 입력 후 소프트웨어 내 Arc Flash 버튼으로
+        Incident Energy 및 PPE Category 산출 후 도면에 반영 필요 (IEC 60900, NFPA 70E 준수).
+      </p>
+    </div>
+
+    <div class="finding ok">
+      <div class="tag">✓ OK #11 — MV 차단기 용량 모두 적합</div>
+      <p>
+        22.9kV 버스 Ik'' = 9.24 kA &lt; CB-101/102/103 정격 25 kA.
+        여유율 +171%. Ip = 23.4 kA &lt; Making capacity 62.5 kA.
+        현재 CB 규격은 적합합니다.
+      </p>
+    </div>
+
+    <div class="finding ok">
+      <div class="tag">✓ OK #12 — TR-MAIN 부하율 양호</div>
+      <p>
+        TR-MAIN 부하율 17.6% — 미래 부하 증설(Future Load) 포함 시에도
+        여유 충분. 플랜트 확장 시 동일 변압기 유지 가능 (최대 증설 허용: +35MW 추가).
+      </p>
+    </div>
+
+  </div>
+</div>
+
+<!-- ───────── PRIORITY TABLE ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>8. 조치 우선순위</h2>
+    <span class="badge-h" style="background:#e8eef8;color:#1a3a7a">Action Items</span>
+  </div>
+  <div class="sec-body">
+    <table>
+      <thead><tr><th>#</th><th>우선순위</th><th>항목</th><th>조치 내용</th><th>담당</th><th>완료기한</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><span class="pri p0">P0 CRITICAL</span></td>
+          <td>PP-101 기동방식</td>
+          <td>DOL → Soft-Starter 변경 (기동전압강하 ≤5%)</td>
+          <td>전기/공정</td>
+          <td>30일 이내</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><span class="pri p0">P0 CRITICAL</span></td>
+          <td>154kV CB Icm 확인</td>
+          <td>계통사 데이터 재확인 후 CB 사양서 업데이트</td>
+          <td>전기</td>
+          <td>30일 이내</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><span class="pri p0">P0 CRITICAL</span></td>
+          <td>0.38kV 전압강하</td>
+          <td>TR-MCC1 탭 +1단 조정 (380→389.5V)</td>
+          <td>전기</td>
+          <td>60일 이내</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><span class="pri p1">P1 WARN</span></td>
+          <td>보호 협조 TCC</td>
+          <td>CB-103 ↔ CB-201~203 시간-전류 협조 곡선 작성</td>
+          <td>전기</td>
+          <td>60일 이내</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><span class="pri p1">P1 WARN</span></td>
+          <td>역률 보상</td>
+          <td>22.9kV 1,200kvar APFC 설치 검토</td>
+          <td>전기/구매</td>
+          <td>90일 이내</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><span class="pri p2">P2 INFO</span></td>
+          <td>Arc Flash 분석</td>
+          <td>Software 내 Arc Flash 실행 → Label 제작</td>
+          <td>전기</td>
+          <td>90일 이내</td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td><span class="pri p2">P2 INFO</span></td>
+          <td>고조파 해석</td>
+          <td>CM-101 VFD 고조파 모델 추가 후 IEEE 519 검토</td>
+          <td>전기</td>
+          <td>120일 이내</td>
+        </tr>
+        <tr>
+          <td>8</td>
+          <td><span class="pri p2">P2 INFO</span></td>
+          <td>비상부하 목록</td>
+          <td>Essential Load List 작성 후 G-EMG 용량 재검토</td>
+          <td>전기/공정</td>
+          <td>120일 이내</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ───────── TOOL ISSUES ───────── -->
+<div class="section">
+  <div class="sec-header">
+    <h2>9. PowerFlow Analyzer 사용 소감 (엔지니어 피드백)</h2>
+    <span class="badge-h" style="background:#fff3c0;color:#8a5a00">Tool Feedback</span>
+  </div>
+  <div class="sec-body">
+    <div class="two-col">
+      <div>
+        <p style="font-size:10px;font-weight:700;color:#005a20;margin-bottom:8px">✅ 잘 된 점</p>
+        <div class="finding ok" style="margin-bottom:8px">
+          <p>Bus 전압 결과가 캔버스에 직접 오버레이되어 시각적으로 직관적.</p>
+        </div>
+        <div class="finding ok" style="margin-bottom:8px">
+          <p>Motor List Excel Import → 자동 SLD 작성 기능으로 MCC 설계 시간 대폭 단축.</p>
+        </div>
+        <div class="finding ok" style="margin-bottom:8px">
+          <p>Load Flow + Short Circuit + Arc Flash + Cable Sizing 통합 실행 편리.</p>
+        </div>
+        <div class="finding ok">
+          <p>Undo/Redo, 인라인 이름 편집, Multi-select 삭제 — ETAP 대비 빠른 편집 UX.</p>
+        </div>
+      </div>
+      <div>
+        <p style="font-size:10px;font-weight:700;color:#b02000;margin-bottom:8px">❌ 개선 필요</p>
+        <div class="finding critical" style="margin-bottom:8px">
+          <p><strong>단상 고장 해석 없음:</strong> IEC 60909 지락 고장(1LL, 2LL) 계산 미지원. EPC 프로젝트에서는 지락 고장 전류 계산이 보호 설정의 핵심.</p>
+        </div>
+        <div class="finding warning" style="margin-bottom:8px">
+          <p><strong>케이블 데이터베이스 빈약:</strong> 국내 표준(KS C IEC 60502) 케이블 규격 DB 없음. 실무에서는 XLPE/CV 케이블 선정이 대부분.</p>
+        </div>
+        <div class="finding warning" style="margin-bottom:8px">
+          <p><strong>변압기 탭 자동 최적화 없음:</strong> MCC 버스 전압강하 해결을 위한 탭 위치 자동 계산 기능 필요.</p>
+        </div>
+        <div class="finding warning" style="margin-bottom:8px">
+          <p><strong>역률 보상 계산 없음:</strong> 콘덴서 용량 자동 계산 기능 없음 (전력요금 최적화 핵심 기능).</p>
+        </div>
+        <div class="finding info" style="margin-bottom:8px">
+          <p><strong>Load Schedule 없음:</strong> 부하 목록표(Load List)에서 도면으로 직접 연동되는 기능 필요. Motor List Import는 시작점이나 Load/Generator도 지원 필요.</p>
+        </div>
+        <div class="finding info">
+          <p><strong>결과 비교 기능 없음:</strong> 베이스 케이스 vs 설계 변경 케이스 비교 (ETAP 'Study Case' 개념). 탭 변경 전/후 비교 등.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  PowerFlow Analyzer v0.1.0 &nbsp;·&nbsp;
+  본 리포트는 시뮬레이션 결과이며 실제 설계에는 공인 전기기사 검토가 필요합니다. &nbsp;·&nbsp;
+  Generated: 2026-05-28
+</div>
+
+</div>
+</body>
+</html>
