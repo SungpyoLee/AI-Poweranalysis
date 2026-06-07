@@ -1,114 +1,232 @@
-import { useState, useCallback } from 'react'
-import {
-  Node, Edge, Connection, NodeChange, EdgeChange,
-  addEdge, applyNodeChanges, applyEdgeChanges,
-  ReactFlowProvider,
-} from 'reactflow'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ReactFlowProvider } from 'reactflow'
 import 'reactflow/dist/style.css'
 
 import Toolbar from './components/Toolbar'
 import EquipmentPalette from './components/EquipmentPalette'
 import PropertyPanel from './components/PropertyPanel'
+import ResultsPanel from './components/ResultsPanel'
 import SLDCanvas from './components/SLDCanvas'
+import ProjectDialog from './components/ProjectDialog'
+import RecentProjectsPanel from './components/RecentProjectsPanel'
+import MotorGroupPanel from './components/MotorGroupPanel'
+import CanvasContextMenu from './components/CanvasContextMenu'
+import AddMotorsToGroupPanel from './components/AddMotorsToGroupPanel'
+import WelcomeScreen from './components/WelcomeScreen'
+import DatasheetImportWizard from './components/DatasheetImportWizard'
+import DiagramImportDialog  from './components/DiagramImportDialog'
+import DiagramLibrary       from './components/DiagramLibrary'
+import MotorListImportDialog from './components/MotorListImportDialog'
+import TapOptimizerPanel from './components/TapOptimizerPanel'
+import LoadScheduleImportDialog from './components/LoadScheduleImportDialog'
+import ToastContainer from './components/ToastContainer'
+import { useDiagramLibraryStore } from './store/useDiagramLibraryStore'
 
 import BusNode from './nodes/BusNode'
 import TransformerNode from './nodes/TransformerNode'
+import ThreeWindingTransformerNode from './nodes/ThreeWindingTransformerNode'
 import BreakerNode from './nodes/BreakerNode'
 import MotorNode from './nodes/MotorNode'
 import GeneratorNode from './nodes/GeneratorNode'
+import LoadNode from './nodes/LoadNode'
+import MotorGroupNode from './nodes/MotorGroupNode'
+import CapacitorNode from './nodes/CapacitorNode'
+import ReactorNode from './nodes/ReactorNode'
 import CableEdge from './edges/CableEdge'
 
-import type { NodeData, EdgeData, EquipmentType, CableProperties } from './types'
-import { defaultProps, defaultCableProps } from './types'
-import { runLoadflow, runShortcircuit } from './api'
-import { computeETAPLayout } from './utils/etapLayout'
+import type { Connection, NodeChange, EdgeChange } from 'reactflow'
+import type { EquipmentType } from './types'
+import { useEquipmentStore } from './store/useEquipmentStore'
+import { useAnalysisStore } from './store/useAnalysisStore'
+import { useProjectStore } from './store/useProjectStore'
+import { useAutoSave } from './hooks/useAutoSave'
+import { generatePDF } from './utils/generatePDF'
+import { exportCanvasPNG, captureCanvasBase64 } from './utils/exportCanvas'
+import { computeProtectionItems } from './utils/computeProtection'
+import {
+  type PFAFile,
+  buildPFA, downloadPFA, readPFAFile, addToRecent, clearAutoSave, loadAutoSave,
+  sanitizeFileName,
+} from './utils/projectIO'
 
 // ── ReactFlow node/edge type registries ──────────────────────────────────────
 const NODE_TYPES = {
-  bus:         BusNode,
-  transformer: TransformerNode,
-  breaker:     BreakerNode,
-  motor:       MotorNode,
-  generator:   GeneratorNode,
+  bus:           BusNode,
+  transformer:   TransformerNode,
+  transformer3w: ThreeWindingTransformerNode,
+  breaker:       BreakerNode,
+  motor:         MotorNode,
+  generator:     GeneratorNode,
+  load:          LoadNode,
+  motorGroup:    MotorGroupNode,
+  capacitor:     CapacitorNode,
+  reactor:       ReactorNode,
 } as const
 
 const EDGE_TYPES = {
   cable: CableEdge,
 } as const
 
-// ── Example network (industrial plant 3-level SLD) ───────────────────────────
-// Topology: 154kV Bus → [Gen, CB-T1→TR-1→22.9kV Bus → [CB-1→M1, CB-2→M2, CB-T2→TR-2→0.4kV Bus → [CB-3→M3, CB-4→M4]]]
-const _RAW_NODES: Node<NodeData>[] = [
-  { id: 'bus-hv',  type: 'bus', position: { x: 0, y: 0 },
-    data: { equipmentType: 'bus', props: { name: '154kV Main Bus', vn_kv: 154, busType: 'Slack' } } },
-  { id: 'gen-1',   type: 'generator', position: { x: 0, y: 0 },
-    data: { equipmentType: 'generator', props: { name: 'G-1', p_mw: 30, vn_kv: 11, pf: 0.9, vm_pu: 1.02 } } },
-  { id: 'cb-t1',   type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-T1', rated_kA: 40, is_closed: true, interrupt_kA: 40 } } },
-  { id: 'tr-1',    type: 'transformer', position: { x: 0, y: 0 },
-    data: { equipmentType: 'transformer', props: { name: 'TR-1', sn_mva: 30, vn_hv_kv: 154, vn_lv_kv: 22.9, vk_percent: 12, xr_ratio: 10 } } },
-  { id: 'bus-mv',  type: 'bus', position: { x: 0, y: 0 },
-    data: { equipmentType: 'bus', props: { name: '22.9kV Bus', vn_kv: 22.9, busType: 'PQ' } } },
-  { id: 'cb-1',    type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-1', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
-  { id: 'mot-1',   type: 'motor', position: { x: 0, y: 0 },
-    data: { equipmentType: 'motor', props: { name: 'M-1', p_kw: 2000, vn_kv: 22.9, pf: 0.85, efficiency: 94 } } },
-  { id: 'cb-2',    type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-2', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
-  { id: 'mot-2',   type: 'motor', position: { x: 0, y: 0 },
-    data: { equipmentType: 'motor', props: { name: 'M-2', p_kw: 1500, vn_kv: 22.9, pf: 0.85, efficiency: 93 } } },
-  { id: 'cb-t2',   type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-T2', rated_kA: 25, is_closed: true, interrupt_kA: 25 } } },
-  { id: 'tr-2',    type: 'transformer', position: { x: 0, y: 0 },
-    data: { equipmentType: 'transformer', props: { name: 'TR-2', sn_mva: 2, vn_hv_kv: 22.9, vn_lv_kv: 0.4, vk_percent: 6, xr_ratio: 6 } } },
-  { id: 'bus-lv',  type: 'bus', position: { x: 0, y: 0 },
-    data: { equipmentType: 'bus', props: { name: '0.4kV MCC Bus', vn_kv: 0.4, busType: 'PQ' } } },
-  { id: 'cb-3',    type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-3', rated_kA: 10, is_closed: true, interrupt_kA: 10 } } },
-  { id: 'mot-3',   type: 'motor', position: { x: 0, y: 0 },
-    data: { equipmentType: 'motor', props: { name: 'M-3', p_kw: 75, vn_kv: 0.4, pf: 0.85, efficiency: 90 } } },
-  { id: 'cb-4',    type: 'breaker', position: { x: 0, y: 0 },
-    data: { equipmentType: 'breaker', props: { name: 'CB-4', rated_kA: 10, is_closed: true, interrupt_kA: 10 } } },
-  { id: 'mot-4',   type: 'motor', position: { x: 0, y: 0 },
-    data: { equipmentType: 'motor', props: { name: 'M-4', p_kw: 45, vn_kv: 0.4, pf: 0.85, efficiency: 90 } } },
-]
-
-function cable(name: string, len: number, r: number, x: number, iMax: number) {
-  return { props: { name, length_km: len, r_ohm_per_km: r, x_ohm_per_km: x, max_i_ka: iMax } }
-}
-const _RAW_EDGES: Edge<EdgeData>[] = [
-  { id: 'e-hv-gen',   source: 'bus-hv', target: 'gen-1',  type: 'cable', data: cable('GC-1', 0.05, 0.05, 0.05, 2.0) },
-  { id: 'e-hv-cbt1',  source: 'bus-hv', target: 'cb-t1',  type: 'cable', data: cable('HV-F1', 0.1, 0.08, 0.08, 1.0) },
-  { id: 'e-cbt1-tr1', source: 'cb-t1',  target: 'tr-1',   type: 'cable', data: cable('TC-1', 0.05, 0.05, 0.05, 1.0) },
-  { id: 'e-tr1-mv',   source: 'tr-1',   target: 'bus-mv', type: 'cable', data: cable('TC-1b', 0.05, 0.05, 0.05, 1.0) },
-  { id: 'e-mv-cb1',   source: 'bus-mv', target: 'cb-1',   type: 'cable', data: cable('MV-F1', 0.3, 0.164, 0.1, 0.8) },
-  { id: 'e-cb1-m1',   source: 'cb-1',   target: 'mot-1',  type: 'cable', data: cable('MC-1', 0.1, 0.164, 0.1, 0.8) },
-  { id: 'e-mv-cb2',   source: 'bus-mv', target: 'cb-2',   type: 'cable', data: cable('MV-F2', 0.3, 0.164, 0.1, 0.6) },
-  { id: 'e-cb2-m2',   source: 'cb-2',   target: 'mot-2',  type: 'cable', data: cable('MC-2', 0.1, 0.164, 0.1, 0.6) },
-  { id: 'e-mv-cbt2',  source: 'bus-mv', target: 'cb-t2',  type: 'cable', data: cable('MV-F3', 0.2, 0.164, 0.1, 0.5) },
-  { id: 'e-cbt2-tr2', source: 'cb-t2',  target: 'tr-2',   type: 'cable', data: cable('TC-2', 0.05, 0.05, 0.05, 0.5) },
-  { id: 'e-tr2-lv',   source: 'tr-2',   target: 'bus-lv', type: 'cable', data: cable('TC-2b', 0.05, 0.08, 0.08, 0.5) },
-  { id: 'e-lv-cb3',   source: 'bus-lv', target: 'cb-3',   type: 'cable', data: cable('LV-F1', 0.05, 0.2, 0.08, 0.3) },
-  { id: 'e-cb3-m3',   source: 'cb-3',   target: 'mot-3',  type: 'cable', data: cable('MC-3', 0.05, 0.2, 0.08, 0.3) },
-  { id: 'e-lv-cb4',   source: 'bus-lv', target: 'cb-4',   type: 'cable', data: cable('LV-F2', 0.05, 0.2, 0.08, 0.2) },
-  { id: 'e-cb4-m4',   source: 'cb-4',   target: 'mot-4',  type: 'cable', data: cable('MC-4', 0.05, 0.2, 0.08, 0.2) },
-]
-
-// Apply ETAP layout to example at module load time
-const { nodes: EXAMPLE_NODES, edges: EXAMPLE_EDGES } = computeETAPLayout(_RAW_NODES, _RAW_EDGES)
-
-let _nodeId = 100
-
 // ── App ──────────────────────────────────────────────────────────────────────
 function AppInner() {
-  const [nodes, setNodes] = useState<Node<NodeData>[]>([])
-  const [edges, setEdges] = useState<Edge<EdgeData>[]>([])
-  const [selectedNode, setSelectedNode] = useState<Node<NodeData> | null>(null)
-  const [selectedEdge, setSelectedEdge] = useState<Edge<EdgeData> | null>(null)
-  const [loading, setLoading]           = useState(false)
-  const [loadingLabel, setLoadingLabel] = useState('')
-  const [converged, setConverged]       = useState<boolean | null>(null)
-  const [error, setError]               = useState<string | null>(null)
+  // Equipment store
+  const nodes            = useEquipmentStore(s => s.nodes)
+  const edges            = useEquipmentStore(s => s.edges)
+  const applyNodeChanges = useEquipmentStore(s => s.applyNodeChanges)
+  const applyEdgeChanges = useEquipmentStore(s => s.applyEdgeChanges)
+  const connectNodes     = useEquipmentStore(s => s.connectNodes)
+  const selectNode       = useEquipmentStore(s => s.selectNode)
+  const selectEdge       = useEquipmentStore(s => s.selectEdge)
+  const clearSelection   = useEquipmentStore(s => s.clearSelection)
+  const dropEquipment    = useEquipmentStore(s => s.dropEquipment)
+  const loadExample      = useEquipmentStore(s => s.loadExample)
+  const clear            = useEquipmentStore(s => s.clear)
+  const applyETAPLayout  = useEquipmentStore(s => s.applyETAPLayout)
+  const loadNetwork           = useEquipmentStore(s => s.loadNetwork)
+  const groupMotors           = useEquipmentStore(s => s.groupMotors)
+  const ungroupMotors         = useEquipmentStore(s => s.ungroupMotors)
+  const setActiveMotorGroup   = useEquipmentStore(s => s.setActiveMotorGroup)
+  const openContextMenu       = useEquipmentStore(s => s.openContextMenu)
+  const closeContextMenu      = useEquipmentStore(s => s.closeContextMenu)
+  const openGroupEditMenu     = useEquipmentStore(s => s.openGroupEditMenu)
+  const closeGroupEditMenu    = useEquipmentStore(s => s.closeGroupEditMenu)
+  const activeMotorGroupId    = useEquipmentStore(s => s.activeMotorGroupId)
+  const contextMenu           = useEquipmentStore(s => s.contextMenu)
+  const groupEditMenu         = useEquipmentStore(s => s.groupEditMenu)
+  const getSelectedNode       = useEquipmentStore(s => s.getSelectedNode)
+  const updateEquipment       = useEquipmentStore(s => s.updateEquipment)
+  const importNodes           = useEquipmentStore(s => s.importNodes)
+  // #1 Undo/Redo
+  const undo     = useEquipmentStore(s => s.undo)
+  const redo     = useEquipmentStore(s => s.redo)
+  const canUndo  = useEquipmentStore(s => s.canUndo)
+  const canRedo  = useEquipmentStore(s => s.canRedo)
+
+  // Analysis store
+  const loading           = useAnalysisStore(s => s.loading)
+  const loadingLabel      = useAnalysisStore(s => s.loadingLabel)
+  const loadflow          = useAnalysisStore(s => s.loadflow)
+  const shortcircuit      = useAnalysisStore(s => s.shortcircuit)
+  const arcFlash          = useAnalysisStore(s => s.arcFlash)
+  const contingency       = useAnalysisStore(s => s.contingency)
+  const harmonics         = useAnalysisStore(s => s.harmonics)
+  const cableSizingResult = useAnalysisStore(s => s.cableSizing)
+  const error             = useAnalysisStore(s => s.error)
+  const runLoadflow       = useAnalysisStore(s => s.runLoadflow)
+  const runLoadflowLocal  = useAnalysisStore(s => s.runLoadflowLocal)
+  const runShortcircuit   = useAnalysisStore(s => s.runShortcircuit)
+  const runContingency    = useAnalysisStore(s => s.runContingency)
+  const runHarmonics      = useAnalysisStore(s => s.runHarmonics)
+  const runCableSizing    = useAnalysisStore(s => s.runCableSizing)
+  const runAsymFault      = useAnalysisStore(s => s.runAsymFault)
+  const clearResults      = useAnalysisStore(s => s.clearResults)
+  const setError          = useAnalysisStore(s => s.setError)
+  const loadResults       = useAnalysisStore(s => s.loadResults)
+
+  // Project store
+  const meta               = useProjectStore(s => s.meta)
+  const isDirty            = useProjectStore(s => s.isDirty)
+  const currentFileName    = useProjectStore(s => s.currentFileName)
+  const showRestoreBanner  = useProjectStore(s => s.showRestoreBanner)
+  const setMeta            = useProjectStore(s => s.setMeta)
+  const markSaved          = useProjectStore(s => s.markSaved)
+  const loadMeta           = useProjectStore(s => s.loadMeta)
+  const newProject         = useProjectStore(s => s.newProject)
+  const checkRestoreBanner = useProjectStore(s => s.checkRestoreBanner)
+  const dismissRestoreBanner = useProjectStore(s => s.dismissRestoreBanner)
+
+  // Panel collapse state
+  const [paletteCollapsed, setPaletteCollapsed] = useState(false)
+  const [rightCollapsed,   setRightCollapsed]   = useState(false)
+
+  // Welcome screen — shown when canvas is empty on first load
+  const [welcomeDismissed, setWelcomeDismissed] = useState(false)
+  const showWelcome = nodes.length === 0 && !welcomeDismissed && !showRestoreBanner
+
+  // Keyboard shortcuts modal
+  const [showShortcuts, setShowShortcuts] = useState(false)
+
+  // Dialog state
+  const [showProjectDialog, setShowProjectDialog] = useState<'new' | 'edit' | null>(null)
+  const [showRecentPanel, setShowRecentPanel]     = useState(false)
+  const [groupNameInput, setGroupNameInput]       = useState<string | null>(null) // null = hidden
+  const [addMotorsTargetId, setAddMotorsTargetId]     = useState<string | null>(null)
+  const [showDatasheetWizard,  setShowDatasheetWizard]  = useState(false)
+  const [showSLDImport,       setShowSLDImport]        = useState(false)
+  const [showLibrary,         setShowLibrary]          = useState(false)
+  const [showMotorListImport,  setShowMotorListImport]  = useState(false)
+  const [showTapOpt,           setShowTapOpt]           = useState(false)
+  const [showLoadSchedule,     setShowLoadSchedule]     = useState(false)
+
+  // #5 ResultsPanel 높이 리사이즈
+  const [resultsPanelH, setResultsPanelH] = useState(380)
+  const resizingRef = useRef(false)
+
+  // #13 Auto Recalculate
+  const [autoRecalc, setAutoRecalc] = useState(false)
+  const autoRecalcTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const saveLibraryTemplate = useDiagramLibraryStore(s => s.saveTemplate)
+  const loadLibraryTemplate = useDiagramLibraryStore(s => s.overwriteTemplate)
+
+  // Auto-save hook
+  useAutoSave()
+
+  // Check restore banner on mount
+  useEffect(() => {
+    checkRestoreBanner()
+  }, [checkRestoreBanner])
+
+  // #1 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z 키보드 단축키
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.ctrlKey && !e.shiftKey && e.key === 'z') { e.preventDefault(); undo() }
+      if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redo() }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [undo, redo])
+
+  // #5 ResultsPanel 리사이즈 핸들러
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    const startY = e.clientY
+    const startH = resultsPanelH
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return
+      const delta = startY - ev.clientY  // 위로 드래그 = 패널 높이 증가
+      setResultsPanelH(Math.max(240, Math.min(620, startH + delta)))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [resultsPanelH])
+
+  // #13 Auto Recalculate — nodes/edges 변경 시 500ms 디바운스 LF 재실행
+  useEffect(() => {
+    if (!autoRecalc) return
+    if (autoRecalcTimer.current) clearTimeout(autoRecalcTimer.current)
+    autoRecalcTimer.current = setTimeout(() => {
+      runLoadflowLocal()
+    }, 700)
+    return () => {
+      if (autoRecalcTimer.current) clearTimeout(autoRecalcTimer.current)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, autoRecalc])
+
+  // ── Helper: confirm unsaved changes ────────────────────────────────────────
+  const confirmDiscard = useCallback((): boolean => {
+    if (!isDirty) return true
+    return window.confirm('저장되지 않은 변경사항이 있습니다. 계속하시겠습니까?')
+  }, [isDirty])
 
   // ── Palette drag ────────────────────────────────────────────────────────────
   const onDragStart = useCallback((e: React.DragEvent, type: EquipmentType) => {
@@ -116,137 +234,170 @@ function AppInner() {
     e.dataTransfer.effectAllowed = 'move'
   }, [])
 
-  // ── Drop on canvas ──────────────────────────────────────────────────────────
-  const onDropEquipment = useCallback((type: EquipmentType, position: { x: number; y: number }) => {
-    const id = `${type}-${++_nodeId}`
-    const newNode: Node<NodeData> = {
-      id,
-      type,
-      position,
-      data: { equipmentType: type, props: defaultProps(type) },
-    }
-    setNodes(ns => [...ns, newNode])
-  }, [])
-
-  // ── ReactFlow change handlers ───────────────────────────────────────────────
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes(ns => applyNodeChanges(changes.filter(c => c.type !== 'remove'), ns))
-    setSelectedNode(prev => {
-      if (!prev) return null
-      const removed = changes.find(c => c.type === 'remove' && (c as any).id === prev.id)
-      return removed ? null : prev
-    })
-  }, [])
-
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges(es => applyEdgeChanges(changes.filter(c => c.type !== 'remove'), es))
-  }, [])
-
-  const onConnect = useCallback((conn: Connection) => {
-    const cable = defaultCableProps()
-    setEdges(es => addEdge({
-      ...conn,
-      type: 'cable',
-      data: { props: cable },
-    } as Edge<EdgeData>, es))
-  }, [])
-
-  // ── Selection ───────────────────────────────────────────────────────────────
-  const onNodeClick = useCallback((node: Node<NodeData>) => {
-    setSelectedNode(node)
-    setSelectedEdge(null)
-  }, [])
-
-  const onEdgeClick = useCallback((edge: Edge<EdgeData>) => {
-    setSelectedEdge(edge)
-    setSelectedNode(null)
-  }, [])
-
-  const onPaneClick = useCallback(() => {
-    setSelectedNode(null)
-    setSelectedEdge(null)
-  }, [])
-
-  // ── Property updates ────────────────────────────────────────────────────────
-  const onUpdateNode = useCallback((id: string, props: NodeData['props']) => {
-    setNodes(ns => ns.map(n => n.id === id ? { ...n, data: { ...n.data, props } } : n))
-    setSelectedNode(prev => prev?.id === id ? { ...prev, data: { ...prev.data, props } } : prev)
-  }, [])
-
-  const onUpdateEdge = useCallback((id: string, props: CableProperties) => {
-    setEdges(es => es.map(e => e.id === id ? { ...e, data: { props } } : e))
-    setSelectedEdge(prev => prev?.id === id ? { ...prev, data: { props } } : prev)
-  }, [])
-
-  const onDeleteNode = useCallback((id: string) => {
-    setNodes(ns => ns.filter(n => n.id !== id))
-    setEdges(es => es.filter(e => e.source !== id && e.target !== id))
-    setSelectedNode(null)
-  }, [])
-
-  const onDeleteEdge = useCallback((id: string) => {
-    setEdges(es => es.filter(e => e.id !== id))
-    setSelectedEdge(null)
-  }, [])
-
-  // ── Auto Layout ─────────────────────────────────────────────────────────────
-  const handleAutoLayout = useCallback(() => {
-    const { nodes: ln, edges: le } = computeETAPLayout(nodes, edges)
-    setNodes(ln)
-    setEdges(le as Edge<EdgeData>[])
-    setSelectedNode(null)
-    setSelectedEdge(null)
-  }, [nodes, edges])
-
-  // ── Toolbar actions ─────────────────────────────────────────────────────────
+  // ── Toolbar handlers ────────────────────────────────────────────────────────
   const handleLoadExample = useCallback(() => {
-    setNodes(EXAMPLE_NODES)
-    setEdges(EXAMPLE_EDGES)
-    setSelectedNode(null)
-    setSelectedEdge(null)
-    setConverged(null)
-    setError(null)
-  }, [])
+    loadExample()
+    clearResults()
+  }, [loadExample, clearResults])
 
   const handleClear = useCallback(() => {
-    setNodes([])
-    setEdges([])
-    setSelectedNode(null)
-    setSelectedEdge(null)
-    setConverged(null)
-    setError(null)
+    clear()
+    clearResults()
+  }, [clear, clearResults])
+
+  const handleExportPDF = useCallback(async () => {
+    const protectionItems  = computeProtectionItems(shortcircuit, nodes, edges)
+    const sldImageBase64   = await captureCanvasBase64().catch(() => null)
+    generatePDF({ nodes, edges, loadflow, shortcircuit, protectionItems, arcFlash, contingency, harmonics, cableSizing: cableSizingResult, meta, sldImageBase64: sldImageBase64 ?? undefined })
+  }, [nodes, edges, loadflow, shortcircuit, arcFlash, contingency, harmonics, cableSizingResult, meta])
+
+  const handleExportPNG = useCallback(() => {
+    exportCanvasPNG(meta.name || 'SLD')
+  }, [meta.name])
+
+  // ── Bulk voltage change ─────────────────────────────────────────────────────
+  const handleBulkVoltageChange = useCallback((nodeIds: string[], vn_kv: number) => {
+    nodeIds.forEach(id => {
+      const node = nodes.find(n => n.id === id)
+      if (!node) return
+      const eq = node.data.equipment as unknown as Record<string, unknown>
+      if ('vn_kv' in eq) updateEquipment(id, { ...eq, vn_kv } as unknown as typeof node.data.equipment)
+    })
+  }, [nodes, updateEquipment])
+
+  // ── Project: New ────────────────────────────────────────────────────────────
+  const handleNew = useCallback(() => {
+    setShowProjectDialog('new')
   }, [])
 
-  const handleRunLoadflow = useCallback(async () => {
-    if (nodes.length === 0) return
-    setLoading(true); setLoadingLabel('Load Flow'); setError(null)
-    try {
-      const result = await runLoadflow(buildNetworkPayload(nodes, edges))
-      setConverged(result.converged)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+  // ── Project: Open ───────────────────────────────────────────────────────────
+  const handleOpen = useCallback(async () => {
+    if (!confirmDiscard()) return
+    const result = await readPFAFile()
+    if (!result) return
+    if (!result.pfa) {
+      setError(result.fileName)  // fileName holds error msg on parse failure
+      return
     }
-  }, [nodes, edges])
+    const { pfa, fileName } = result
+    loadNetwork(pfa.network.nodes, pfa.network.edges)
+    loadMeta(pfa.meta, fileName)
+    loadResults(pfa.results)
+    clearAutoSave()
+  }, [confirmDiscard, loadNetwork, loadMeta, loadResults, setError])
 
-  const handleRunShortcircuit = useCallback(async () => {
-    if (nodes.length === 0) return
-    setLoading(true); setLoadingLabel('Short-Circuit'); setError(null)
-    try {
-      await runShortcircuit(buildNetworkPayload(nodes, edges))
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+  // ── Project: Save ───────────────────────────────────────────────────────────
+  const handleSave = useCallback(() => {
+    const fileName = currentFileName ?? sanitizeFileName(meta.name) + '.pfa'
+    const pfa = buildPFA(meta, nodes, edges, {
+      loadflow:     loadflow     ?? null,
+      shortcircuit: shortcircuit ?? null,
+      arcFlash:     arcFlash     ?? null,
+      contingency:  contingency  ?? null,
+      harmonics:    harmonics    ?? null,
+      cableSizing:  cableSizingResult ?? null,
+    })
+    downloadPFA(pfa, fileName)
+    addToRecent(pfa, fileName)
+    markSaved(fileName)
+    clearAutoSave()
+  }, [currentFileName, meta, nodes, edges, loadflow, shortcircuit, arcFlash, contingency, harmonics, cableSizingResult, markSaved])
+
+  // ── Project: Save As ────────────────────────────────────────────────────────
+  const handleSaveAs = useCallback(() => {
+    const pfa = buildPFA(meta, nodes, edges, {
+      loadflow:     loadflow     ?? null,
+      shortcircuit: shortcircuit ?? null,
+      arcFlash:     arcFlash     ?? null,
+      contingency:  contingency  ?? null,
+      harmonics:    harmonics    ?? null,
+      cableSizing:  cableSizingResult ?? null,
+    })
+    const fileName = sanitizeFileName(meta.name) + '.pfa'
+    downloadPFA(pfa, fileName)
+    addToRecent(pfa, fileName)
+    markSaved(fileName)
+    clearAutoSave()
+  }, [meta, nodes, edges, loadflow, shortcircuit, arcFlash, contingency, harmonics, cableSizingResult, markSaved])
+
+  // ── Project: Recent load ────────────────────────────────────────────────────
+  const handleLoadRecent = useCallback((pfa: PFAFile, fileName: string) => {
+    if (!confirmDiscard()) return
+    loadNetwork(pfa.network.nodes, pfa.network.edges)
+    loadMeta(pfa.meta, fileName)
+    loadResults(pfa.results)
+    clearAutoSave()
+    setShowRecentPanel(false)
+  }, [confirmDiscard, loadNetwork, loadMeta, loadResults])
+
+  // ── Welcome screen action wrappers (반드시 handleNew/handleOpen/handleLoadRecent 뒤에 위치) ──
+  const handleWelcomeNew = useCallback(() => {
+    setWelcomeDismissed(true)
+    handleNew()
+  }, [handleNew])
+
+  const handleWelcomeOpen = useCallback(async () => {
+    setWelcomeDismissed(true)
+    await handleOpen()
+  }, [handleOpen])
+
+  const handleWelcomeExample = useCallback(() => {
+    setWelcomeDismissed(true)
+    handleLoadExample()
+  }, [handleLoadExample])
+
+  const handleWelcomeLoadRecent = useCallback((pfa: PFAFile, fileName: string) => {
+    setWelcomeDismissed(true)
+    handleLoadRecent(pfa, fileName)
+  }, [handleLoadRecent])
+
+  // ── Project: Restore autosave ───────────────────────────────────────────────
+  const handleRestore = useCallback(() => {
+    const pfa = loadAutoSave()
+    if (!pfa) return
+    loadNetwork(pfa.network.nodes, pfa.network.edges)
+    loadMeta(pfa.meta)
+    loadResults(pfa.results)
+    dismissRestoreBanner()
+  }, [loadNetwork, loadMeta, loadResults, dismissRestoreBanner])
+
+  // ── Project: Edit meta ──────────────────────────────────────────────────────
+  const handleEditMeta = useCallback(() => {
+    setShowProjectDialog('edit')
+  }, [])
+
+  // ── Motor Group: canvas callbacks ───────────────────────────────────────────
+  const handleNodeDoubleClick = useCallback((nodeId: string, nodeType: string) => {
+    if (nodeType === 'motorGroup') setActiveMotorGroup(nodeId)
+  }, [setActiveMotorGroup])
+
+  const handleNodeContextMenu = useCallback((
+    nodeId: string,
+    nodeType: string,
+    pos: { x: number; y: number },
+    selectedMotorIds: string[],
+  ) => {
+    if (nodeType === 'motorGroup') {
+      openGroupEditMenu(nodeId, pos)
+      return
     }
-  }, [nodes, edges])
+    if (selectedMotorIds.length > 0 &&
+        selectedMotorIds.every(id => nodes.find(n => n.id === id)?.type === 'motor')) {
+      openContextMenu(selectedMotorIds, pos)
+    }
+  }, [nodes, openContextMenu, openGroupEditMenu])
+
+  const handleCreateGroup = useCallback((name: string) => {
+    if (!contextMenu) return
+    groupMotors(contextMenu.motorIds, name.trim() || 'Motor Group')
+    setGroupNameInput(null)
+  }, [contextMenu, groupMotors])
 
   return (
     <div style={{
       display: 'grid',
       gridTemplateRows: 'auto 1fr auto',
-      gridTemplateColumns: '180px 1fr 260px',
+      gridTemplateColumns: `${paletteCollapsed ? 28 : 180}px 1fr ${rightCollapsed ? 28 : 260}px`,
       height: '100vh',
       overflow: 'hidden',
       fontFamily: "'Segoe UI', 'Malgun Gothic', Arial, sans-serif",
@@ -256,15 +407,77 @@ function AppInner() {
         <Toolbar
           onLoadExample={handleLoadExample}
           onClear={handleClear}
-          onAutoLayout={handleAutoLayout}
-          onRunLoadflow={handleRunLoadflow}
-          onRunShortcircuit={handleRunShortcircuit}
+          onAutoLayout={applyETAPLayout}
+          onRunLoadflow={runLoadflow}
+          onRunLoadflowLocal={runLoadflowLocal}
+          onRunShortcircuit={runShortcircuit}
+          onRunContingency={runContingency}
+          onRunHarmonics={runHarmonics}
+          onRunCableSizing={runCableSizing}
+          onRunAsymFault={runAsymFault}
+          onOpenTapOpt={() => setShowTapOpt(true)}
+          onImportLoadSch={() => setShowLoadSchedule(true)}
+          onExportPDF={handleExportPDF}
+          onExportPNG={handleExportPNG}
           loading={loading}
           loadingLabel={loadingLabel}
-          converged={converged}
+          converged={loadflow?.converged ?? null}
+          meta={loadflow?.meta ?? null}
           nodeCount={nodes.length}
           edgeCount={edges.length}
+          hasResults={!!(loadflow || shortcircuit)}
+          projectName={meta.name}
+          isDirty={isDirty}
+          onNew={handleNew}
+          onOpen={handleOpen}
+          onSave={handleSave}
+          onSaveAs={handleSaveAs}
+          onRecent={() => setShowRecentPanel(true)}
+          onEditMeta={handleEditMeta}
+          onOpenDatasheet={() => setShowDatasheetWizard(true)}
+          onImportSLD={() => setShowSLDImport(true)}
+          onOpenLibrary={() => setShowLibrary(true)}
+          onImportMotorList={() => setShowMotorListImport(true)}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo()}
+          canRedo={canRedo()}
+          autoRecalc={autoRecalc}
+          onAutoRecalc={setAutoRecalc}
+          onShowShortcuts={() => setShowShortcuts(true)}
         />
+
+        {/* Restore banner */}
+        {showRestoreBanner && (
+          <div style={{
+            background: '#fffbe6', borderBottom: '1px solid #e0c840',
+            padding: '5px 12px', fontSize: 10.5, color: '#5a4400',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{ background: '#e0b000', color: '#fff', padding: '1px 6px', borderRadius: 1, fontSize: 10, fontWeight: 700 }}>
+              AUTO SAVE
+            </span>
+            <span style={{ flex: 1 }}>이전 세션의 자동 저장 데이터가 있습니다. 복원하시겠습니까?</span>
+            <button
+              onClick={handleRestore}
+              style={{
+                padding: '3px 12px', fontSize: 10, cursor: 'pointer',
+                background: 'linear-gradient(to bottom, #e8f0fa, #dce6f4)',
+                border: '1px solid #8aaac8', borderRadius: 2,
+                color: '#1a3a7a', fontWeight: 600,
+              }}
+            >
+              복원
+            </button>
+            <button
+              onClick={dismissRestoreBanner}
+              style={{ background: 'none', border: 'none', color: '#8a7000', cursor: 'pointer', fontSize: 13 }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {error && (
           <div style={{
             background: '#fce8e8', borderBottom: '1px solid #e09090',
@@ -281,32 +494,94 @@ function AppInner() {
       </div>
 
       {/* ── Equipment Palette ─── */}
-      <EquipmentPalette onDragStart={onDragStart} />
+      {paletteCollapsed ? (
+        <div style={{
+          width: 28, background: 'linear-gradient(to bottom, #1e3a7a, #152d60)',
+          borderRight: '1px solid #3a5aaa',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          paddingTop: 8, gap: 8,
+        }}>
+          <button
+            onClick={() => setPaletteCollapsed(false)}
+            title="패널 펼치기"
+            style={{
+              background: 'none', border: 'none', color: '#a0b8e0',
+              cursor: 'pointer', fontSize: 14, padding: '2px',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#fff' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#a0b8e0' }}
+          >›</button>
+          <div style={{
+            writingMode: 'vertical-rl', transform: 'rotate(180deg)',
+            fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase',
+            color: '#6080b0', userSelect: 'none', marginTop: 4,
+          }}>Equipment</div>
+        </div>
+      ) : (
+        <EquipmentPalette onDragStart={onDragStart} onCollapse={() => setPaletteCollapsed(true)} />
+      )}
 
-      {/* ── Canvas ─── */}
-      <SLDCanvas
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={NODE_TYPES}
-        edgeTypes={EDGE_TYPES}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodeClick={onNodeClick}
-        onEdgeClick={onEdgeClick}
-        onPaneClick={onPaneClick}
-        onDropEquipment={onDropEquipment}
-      />
+      {/* ── Canvas + Welcome Screen overlay ─── */}
+      <div style={{ position: 'relative', overflow: 'hidden', minHeight: 0 }}>
+        <SLDCanvas
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={NODE_TYPES}
+          edgeTypes={EDGE_TYPES}
+          onNodesChange={(changes: NodeChange[]) => applyNodeChanges(changes)}
+          onEdgesChange={(changes: EdgeChange[]) => applyEdgeChanges(changes)}
+          onConnect={(conn: Connection) => connectNodes(conn)}
+          onNodeClick={(node) => selectNode(node.id)}
+          onEdgeClick={(edge) => selectEdge(edge.id)}
+          onPaneClick={clearSelection}
+          onDropEquipment={dropEquipment}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onNodeContextMenu={handleNodeContextMenu}
+          onBulkVoltageChange={handleBulkVoltageChange}
+        />
+        {showWelcome && (
+          <WelcomeScreen
+            onNew={handleWelcomeNew}
+            onOpen={handleWelcomeOpen}
+            onLoadExample={handleWelcomeExample}
+            onLoadRecent={handleWelcomeLoadRecent}
+            onDismiss={() => setWelcomeDismissed(true)}
+          />
+        )}
+      </div>
 
-      {/* ── Property Panel ─── */}
-      <PropertyPanel
-        selectedNode={selectedNode}
-        selectedEdge={selectedEdge}
-        onUpdateNode={onUpdateNode}
-        onUpdateEdge={onUpdateEdge}
-        onDeleteNode={onDeleteNode}
-        onDeleteEdge={onDeleteEdge}
-      />
+      {/* ── Right Panel (Properties / MotorGroup) ─── */}
+      {rightCollapsed ? (
+        <div style={{
+          width: 28, background: 'linear-gradient(to bottom, #1e3a7a, #152d60)',
+          borderLeft: '1px solid #3a5aaa',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          paddingTop: 8, gap: 8,
+        }}>
+          <button
+            onClick={() => setRightCollapsed(false)}
+            title="패널 펼치기"
+            style={{
+              background: 'none', border: 'none', color: '#a0b8e0',
+              cursor: 'pointer', fontSize: 14, padding: '2px',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#fff' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#a0b8e0' }}
+          >‹</button>
+          <div style={{
+            writingMode: 'vertical-rl', transform: 'rotate(180deg)',
+            fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase',
+            color: '#6080b0', userSelect: 'none', marginTop: 4,
+          }}>{activeMotorGroupId ? 'Motor Group' : 'Properties'}</div>
+        </div>
+      ) : activeMotorGroupId ? (
+        <MotorGroupPanel onCollapse={() => setRightCollapsed(true)} />
+      ) : (
+        <PropertyPanel onCollapse={() => setRightCollapsed(true)} />
+      )}
+
+      {/* ── Results Panel (full width, visible when results exist) ─── */}
+      <ResultsPanel height={resultsPanelH} onResizeStart={handleResizeMouseDown} />
 
       {/* ── Status bar (full width) ─── */}
       <div style={{
@@ -323,12 +598,13 @@ function AppInner() {
         gap: 0,
       }}>
         {[
-          ['Buses',       nodes.filter(n => n.type === 'bus').length],
+          ['Buses',        nodes.filter(n => n.type === 'bus').length],
           ['Transformers', nodes.filter(n => n.type === 'transformer').length],
-          ['Breakers',    nodes.filter(n => n.type === 'breaker').length],
-          ['Motors',      nodes.filter(n => n.type === 'motor').length],
-          ['Generators',  nodes.filter(n => n.type === 'generator').length],
-          ['Cables',      edges.length],
+          ['Breakers',     nodes.filter(n => n.type === 'breaker').length],
+          ['Motors',       nodes.filter(n => n.type === 'motor').length],
+          ['Generators',   nodes.filter(n => n.type === 'generator').length],
+          ['Loads',        nodes.filter(n => n.type === 'load').length],
+          ['Cables',       edges.length],
         ].map(([label, val]) => (
           <div key={label as string} style={{ padding: '0 10px', borderRight: '1px solid #9aaabb', display: 'flex', gap: 5 }}>
             <span style={{ color: '#7a8898' }}>{label}</span>
@@ -339,89 +615,328 @@ function AppInner() {
           IEC 60909 · Grid Snap {20}px · PowerFlow Analyzer
         </div>
       </div>
+
+      {/* ── Project Dialog (new / edit) ─── */}
+      {showProjectDialog && (
+        <ProjectDialog
+          mode={showProjectDialog}
+          meta={meta}
+          onConfirm={patch => {
+            if (showProjectDialog === 'new') {
+              if (!confirmDiscard()) { setShowProjectDialog(null); return }
+              newProject(patch.name)
+              setMeta(patch)
+              clear()
+              clearResults()
+            } else {
+              setMeta(patch)
+            }
+            setShowProjectDialog(null)
+          }}
+          onCancel={() => setShowProjectDialog(null)}
+        />
+      )}
+
+      {/* ── Recent Projects Panel ─── */}
+      {showRecentPanel && (
+        <RecentProjectsPanel
+          onLoad={handleLoadRecent}
+          onClose={() => setShowRecentPanel(false)}
+        />
+      )}
+
+      {/* ── Canvas context menu ─── */}
+      {contextMenu && (
+        <CanvasContextMenu
+          x={contextMenu.pos.x}
+          y={contextMenu.pos.y}
+          onClose={closeContextMenu}
+          items={[
+            {
+              label: `전동기 ${contextMenu.motorIds.length}개 → 그룹 생성`,
+              icon: (
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <circle cx="3.5" cy="6.5" r="2.5" stroke="currentColor" strokeWidth="1.1"/>
+                  <circle cx="9.5" cy="6.5" r="2.5" stroke="currentColor" strokeWidth="1.1"/>
+                  <path d="M6 4v5M3.5 6.5h6" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+                </svg>
+              ),
+              disabled: contextMenu.motorIds.length < 2,
+              onClick: () => setGroupNameInput('Motor Group'),
+            },
+          ]}
+        />
+      )}
+
+      {/* ── MotorGroup right-click menu ─── */}
+      {groupEditMenu && (
+        <CanvasContextMenu
+          x={groupEditMenu.pos.x}
+          y={groupEditMenu.pos.y}
+          onClose={closeGroupEditMenu}
+          items={[
+            {
+              label: '전동기 추가...',
+              icon: (
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" strokeWidth="1.1"/>
+                  <path d="M6.5 4v5M4 6.5h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+              ),
+              onClick: () => { setAddMotorsTargetId(groupEditMenu.groupId) },
+            },
+            { label: '---', onClick: () => {} },
+            {
+              label: '상세 보기',
+              icon: (
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <rect x="1" y="1" width="11" height="11" rx="1" stroke="currentColor" strokeWidth="1.1"/>
+                  <path d="M3 4h7M3 6.5h7M3 9h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+                </svg>
+              ),
+              onClick: () => setActiveMotorGroup(groupEditMenu.groupId),
+            },
+            {
+              label: '그룹 해제',
+              danger: true,
+              icon: (
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <path d="M2 2l9 9M11 2L2 11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                </svg>
+              ),
+              onClick: () => ungroupMotors(groupEditMenu.groupId),
+            },
+          ]}
+        />
+      )}
+
+      {/* ── SLD Import Wizard ─── */}
+      {showSLDImport && (
+        <DiagramImportDialog
+          onClose={() => setShowSLDImport(false)}
+          onImport={(newNodes, newEdges) => {
+            importNodes(newNodes, newEdges)
+            setShowSLDImport(false)
+          }}
+        />
+      )}
+
+      {/* ── Diagram Library ─── */}
+      {showLibrary && (
+        <DiagramLibrary
+          onLoad={(libNodes, libEdges) => {
+            if (!confirmDiscard()) return
+            loadNetwork(libNodes, libEdges)
+          }}
+          onSaveCurrent={(name, desc) => {
+            saveLibraryTemplate(name, desc, nodes, edges)
+            setShowLibrary(false)
+          }}
+          onClose={() => setShowLibrary(false)}
+        />
+      )}
+
+      {/* ── Motor List Import Wizard ─── */}
+      {showMotorListImport && (
+        <MotorListImportDialog
+          onClose={() => setShowMotorListImport(false)}
+          onImport={(newNodes, newEdges, runLF) => {
+            importNodes(newNodes, newEdges)
+            setShowMotorListImport(false)
+            if (runLF) {
+              // 캔버스 상태가 업데이트된 후 실행 (한 프레임 뒤)
+              setTimeout(() => runLoadflowLocal(), 120)
+            }
+          }}
+        />
+      )}
+
+      {/* ── Datasheet Import Wizard ─── */}
+      {showDatasheetWizard && (() => {
+        const sel = getSelectedNode()
+        const selectedEquipment = sel
+          ? { id: sel.id, type: sel.type ?? '', equipment: sel.data.equipment }
+          : null
+        return (
+          <DatasheetImportWizard
+            onClose={() => setShowDatasheetWizard(false)}
+            selectedEquipment={selectedEquipment}
+            onApply={(nodeId, patch) => {
+              const node = nodes.find(n => n.id === nodeId)
+              if (!node) return
+              updateEquipment(nodeId, { ...node.data.equipment, ...patch } as typeof node.data.equipment)
+              setShowDatasheetWizard(false)
+            }}
+          />
+        )
+      })()}
+
+      {/* ── Add motors to group panel ─── */}
+      {addMotorsTargetId && (
+        <AddMotorsToGroupPanel
+          groupId={addMotorsTargetId}
+          onClose={() => setAddMotorsTargetId(null)}
+        />
+      )}
+
+      {/* ── Group name input dialog ─── */}
+      {groupNameInput !== null && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9600,
+          background: 'rgba(0,0,0,0.40)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setGroupNameInput(null) }}
+        >
+          <div style={{
+            background: '#f4f6f8', border: '1px solid #8a9aaa', borderRadius: 3,
+            boxShadow: '0 8px 28px rgba(0,0,0,0.25)', width: 320, overflow: 'hidden',
+            fontFamily: "'Segoe UI', 'Malgun Gothic', Arial, sans-serif",
+          }}>
+            <div style={{
+              background: 'linear-gradient(to bottom, #8a5000, #6b3a00)',
+              padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#ffe8c0' }}>그룹 이름 입력</span>
+              <button onClick={() => setGroupNameInput(null)}
+                style={{ background: 'none', border: 'none', color: '#c8a070', cursor: 'pointer', fontSize: 16 }}>✕</button>
+            </div>
+            <div style={{ padding: '16px' }}>
+              <input
+                autoFocus
+                value={groupNameInput}
+                onChange={e => setGroupNameInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleCreateGroup(groupNameInput)
+                  if (e.key === 'Escape') setGroupNameInput(null)
+                }}
+                placeholder="예: MCC Panel A"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  padding: '6px 8px', fontSize: 11,
+                  fontFamily: 'Consolas, monospace',
+                  background: '#fff', border: '1px solid #b0bcc8',
+                  borderRadius: 2, color: '#0a1a2a', outline: 'none',
+                }}
+                onFocus={e => { e.target.style.borderColor = '#8a5000' }}
+                onBlur={e => { e.target.style.borderColor = '#b0bcc8' }}
+              />
+              <div style={{ fontSize: 9, color: '#8a9aaa', marginTop: 4 }}>
+                {contextMenu?.motorIds.length ?? 0}개 전동기가 그룹에 포함됩니다.
+              </div>
+            </div>
+            <div style={{
+              display: 'flex', gap: 8, justifyContent: 'flex-end',
+              padding: '0 16px 14px',
+            }}>
+              <button onClick={() => setGroupNameInput(null)}
+                style={{
+                  padding: '5px 16px', fontSize: 10.5, cursor: 'pointer',
+                  background: '#e8ecf0', border: '1px solid #a0b0c0',
+                  borderRadius: 2, color: '#3a4a5a',
+                }}>
+                취소
+              </button>
+              <button
+                onClick={() => handleCreateGroup(groupNameInput)}
+                disabled={!groupNameInput.trim()}
+                style={{
+                  padding: '5px 16px', fontSize: 10.5, cursor: 'pointer',
+                  background: groupNameInput.trim() ? 'linear-gradient(to bottom, #8a5000, #6b3a00)' : '#c0b0a0',
+                  border: 'none', borderRadius: 2, color: '#fff', fontWeight: 700,
+                  opacity: groupNameInput.trim() ? 1 : 0.6,
+                }}>
+                그룹 생성
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── Tap Optimizer ─── */}
+      {showTapOpt && <TapOptimizerPanel onClose={() => setShowTapOpt(false)} />}
+
+      {/* ── Load Schedule Import ─── */}
+      {showLoadSchedule && (
+        <LoadScheduleImportDialog
+          onClose={() => setShowLoadSchedule(false)}
+          onImport={(newNodes, newEdges) => {
+            importNodes(newNodes, newEdges)
+            setShowLoadSchedule(false)
+          }}
+        />
+      )}
+
+      {/* ── Keyboard Shortcuts Modal ─── */}
+      {showShortcuts && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9800,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={e => { if (e.target === e.currentTarget) setShowShortcuts(false) }}
+        >
+          <div style={{
+            background: '#f4f6f8', border: '1px solid #8a9aaa', borderRadius: 4,
+            boxShadow: '0 12px 36px rgba(0,0,0,0.3)',
+            width: 400, overflow: 'hidden',
+            fontFamily: "'Segoe UI','Malgun Gothic',Arial,sans-serif",
+          }}>
+            <div style={{
+              background: 'linear-gradient(to bottom, #1e3a7a, #152d60)',
+              padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>키보드 단축키</span>
+              <button onClick={() => setShowShortcuts(false)}
+                style={{ background: 'none', border: 'none', color: '#a0b8e0', cursor: 'pointer', fontSize: 16 }}>✕</button>
+            </div>
+            <div style={{ padding: '12px 16px' }}>
+              {([
+                ['Ctrl + Z',        '실행 취소'],
+                ['Ctrl + Y / Ctrl + Shift + Z', '다시 실행'],
+                ['Ctrl + S',        '저장'],
+                ['Delete / Backspace', '선택 장비 삭제'],
+                ['Ctrl + A',        '전체 선택'],
+                ['Ctrl + 드래그',   '다중 선택 (Shift 드래그)'],
+                ['Scroll',          '캔버스 줌 인/아웃'],
+                ['Space + 드래그',  '캔버스 이동 (Pan)'],
+                ['더블 클릭',       'Motor Group 상세 보기'],
+                ['우클릭',          '컨텍스트 메뉴'],
+              ] as [string, string][]).map(([key, desc]) => (
+                <div key={key} style={{
+                  display: 'flex', alignItems: 'center',
+                  padding: '5px 0', borderBottom: '1px solid #e8ecf0',
+                }}>
+                  <span style={{
+                    width: 190, flexShrink: 0,
+                    fontFamily: 'Consolas, monospace',
+                    fontSize: 10, color: '#0a1a2a',
+                    background: '#e8ecf4', border: '1px solid #c8d4e0',
+                    borderRadius: 2, padding: '1px 6px',
+                    display: 'inline-block',
+                  }}>{key}</span>
+                  <span style={{ fontSize: 10.5, color: '#3a4a5a', marginLeft: 10 }}>{desc}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{
+              padding: '8px 16px 10px', background: '#eaecf0',
+              display: 'flex', justifyContent: 'flex-end',
+            }}>
+              <button onClick={() => setShowShortcuts(false)} style={{
+                padding: '4px 18px', fontSize: 10.5, cursor: 'pointer',
+                background: 'linear-gradient(to bottom, #1e3a7a, #152d60)',
+                border: 'none', borderRadius: 2, color: '#fff', fontWeight: 700,
+              }}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* #3 Toast 알림 컨테이너 */}
+      <ToastContainer />
     </div>
   )
-}
-
-// ── Network payload builder (maps React state → API format) ─────────────────
-function buildNetworkPayload(nodes: Node<NodeData>[], edges: Edge<EdgeData>[]) {
-  const buses = nodes.filter(n => n.type === 'bus').map((n, i) => ({
-    id: i + 1,
-    name: (n.data.props as any).name,
-    vn_kv: (n.data.props as any).vn_kv,
-    type: (n.data.props as any).busType === 'Slack' ? 'b' : 'b',
-    _nodeId: n.id,
-  }))
-  const busIdMap = Object.fromEntries(buses.map((b, i) => [b._nodeId, i + 1]))
-
-  return {
-    name: 'PowerFlow Network',
-    f_hz: 60,
-    buses: buses.map(({ _nodeId, ...b }) => b),
-    external_grids: nodes.filter(n => n.type === 'bus' && (n.data.props as any).busType === 'Slack').map(n => ({
-      bus_id: busIdMap[n.id], name: 'Grid', vm_pu: 1.0, va_degree: 0,
-      s_sc_max_mva: 2000, s_sc_min_mva: 1500, rx_max: 0.1, rx_min: 0.1,
-    })),
-    loads: nodes.filter(n => n.type === 'motor').map(n => ({
-      bus_id: busIdMap[findConnectedBus(n.id, edges, nodes)],
-      name: (n.data.props as any).name,
-      p_mw: (n.data.props as any).p_kw / 1000,
-      q_mvar: (n.data.props as any).p_kw / 1000 * Math.tan(Math.acos((n.data.props as any).pf)),
-    })).filter(l => l.bus_id),
-    generators: nodes.filter(n => n.type === 'generator').map(n => ({
-      bus_id: busIdMap[findConnectedBus(n.id, edges, nodes)],
-      name: (n.data.props as any).name,
-      p_mw: (n.data.props as any).p_mw,
-      vm_pu: (n.data.props as any).vm_pu,
-      max_q_mvar: 999, min_q_mvar: -999,
-    })).filter(g => g.bus_id),
-    lines: edges.filter(e => {
-      const src = nodes.find(n => n.id === e.source)
-      const tgt = nodes.find(n => n.id === e.target)
-      return src?.type === 'bus' && tgt?.type === 'bus'
-    }).map(e => ({
-      from_bus_id: busIdMap[e.source],
-      to_bus_id:   busIdMap[e.target],
-      name: (e.data as any)?.props?.name ?? e.id,
-      length_km: (e.data as any)?.props?.length_km ?? 1,
-      r_ohm_per_km: (e.data as any)?.props?.r_ohm_per_km ?? 0.164,
-      x_ohm_per_km: (e.data as any)?.props?.x_ohm_per_km ?? 0.1,
-      c_nf_per_km: 0,
-      max_i_ka: (e.data as any)?.props?.max_i_ka ?? 0.5,
-    })),
-    transformers: nodes.filter(n => n.type === 'transformer').map(n => {
-      const connectedBuses = findConnectedBuses(n.id, edges, nodes)
-      if (connectedBuses.length < 2) return null
-      const p = n.data.props as any
-      return {
-        hv_bus_id: busIdMap[connectedBuses[0]],
-        lv_bus_id: busIdMap[connectedBuses[1]],
-        name: p.name,
-        sn_mva: p.sn_mva,
-        vn_hv_kv: p.vn_hv_kv,
-        vn_lv_kv: p.vn_lv_kv,
-        vk_percent: p.vk_percent,
-        vkr_percent: 0.5,
-        pfe_kw: 0,
-        i0_percent: 0,
-      }
-    }).filter(Boolean),
-  }
-}
-
-function findConnectedBus(nodeId: string, edges: Edge[], nodes: Node[]): string {
-  const connected = edges
-    .filter(e => e.source === nodeId || e.target === nodeId)
-    .map(e => e.source === nodeId ? e.target : e.source)
-    .find(id => nodes.find(n => n.id === id && n.type === 'bus'))
-  return connected ?? ''
-}
-
-function findConnectedBuses(nodeId: string, edges: Edge[], nodes: Node[]): string[] {
-  return edges
-    .filter(e => e.source === nodeId || e.target === nodeId)
-    .map(e => e.source === nodeId ? e.target : e.source)
-    .filter(id => nodes.find(n => n.id === id && n.type === 'bus'))
 }
 
 export default function App() {

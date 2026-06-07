@@ -1,11 +1,11 @@
 import { memo } from 'react'
 import { Handle, Position, NodeProps } from 'reactflow'
-import type { NodeData, GeneratorProperties } from '../types'
+import type { NodeData, Generator } from '../types'
 
 const W = 44
 
 function GeneratorNode({ data, selected }: NodeProps<NodeData>) {
-  const p = data.props as GeneratorProperties
+  const p = data.equipment as Generator
   const stroke = selected ? '#1a3aff' : '#0a0a1e'
   const cx = W / 2
 

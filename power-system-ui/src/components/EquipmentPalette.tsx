@@ -45,28 +45,84 @@ function PaletteSymbol({ type }: { type: EquipmentType }) {
             fill="none" stroke="#0a0a1a" strokeWidth="1.4" strokeLinecap="round"/>
         </svg>
       )
+    case 'load':
+      return (
+        <svg width="40" height="40" viewBox="0 0 40 40">
+          <line x1="20" y1="2" x2="20" y2="14" stroke="#0a0a1a" strokeWidth="2" strokeLinecap="round"/>
+          <polygon points="20,38 8,14 32,14" fill="none" stroke="#0a0a1a" strokeWidth="1.8"
+            strokeLinejoin="round"/>
+          <line x1="8" y1="38" x2="32" y2="38" stroke="#0a0a1a" strokeWidth="2" strokeLinecap="round"/>
+        </svg>
+      )
+    case 'motorGroup':
+      return (
+        <svg width="40" height="40" viewBox="0 0 40 40">
+          <rect x="2" y="8" width="36" height="24" rx="2" fill="none" stroke="#6b3a00" strokeWidth="1.8"/>
+          <circle cx="13" cy="20" r="7" fill="none" stroke="#6b3a00" strokeWidth="1.6"/>
+          <circle cx="27" cy="20" r="7" fill="none" stroke="#6b3a00" strokeWidth="1.6"/>
+          <text x="13" y="24" textAnchor="middle" fill="#6b3a00" fontSize="10" fontWeight="bold"
+            fontFamily="'Segoe UI', Arial, sans-serif">M</text>
+          <text x="27" y="24" textAnchor="middle" fill="#6b3a00" fontSize="10" fontWeight="bold"
+            fontFamily="'Segoe UI', Arial, sans-serif">M</text>
+        </svg>
+      )
+    case 'transformer3w':
+      return (
+        <svg width="40" height="48" viewBox="0 0 40 48">
+          <circle cx="20" cy="10" r="8" fill="none" stroke="#5a0090" strokeWidth="1.8"/>
+          <circle cx="20" cy="24" r="8" fill="none" stroke="#5a0090" strokeWidth="1.8"/>
+          <circle cx="20" cy="38" r="8" fill="none" stroke="#5a0090" strokeWidth="1.8"/>
+          <text x="20" y="41" textAnchor="middle" fill="#5a0090" fontSize="7" fontWeight="bold"
+            fontFamily="'Segoe UI', Arial, sans-serif">✶</text>
+        </svg>
+      )
+    case 'capacitor':
+      return (
+        <svg width="40" height="44" viewBox="0 0 40 44">
+          <line x1="20" y1="2" x2="20" y2="18" stroke="#005a8a" strokeWidth="2" strokeLinecap="round"/>
+          <line x1="8" y1="18" x2="32" y2="18" stroke="#005a8a" strokeWidth="2.5" strokeLinecap="round"/>
+          <line x1="8" y1="24" x2="32" y2="24" stroke="#005a8a" strokeWidth="2.5" strokeLinecap="round"/>
+          <line x1="20" y1="24" x2="20" y2="32" stroke="#005a8a" strokeWidth="2" strokeLinecap="round"/>
+          <line x1="12" y1="32" x2="28" y2="32" stroke="#005a8a" strokeWidth="2" strokeLinecap="round"/>
+          <line x1="15" y1="36" x2="25" y2="36" stroke="#005a8a" strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="18" y1="40" x2="22" y2="40" stroke="#005a8a" strokeWidth="1" strokeLinecap="round"/>
+        </svg>
+      )
+    case 'reactor':
+      return (
+        <svg width="40" height="44" viewBox="0 0 40 44">
+          <line x1="20" y1="2" x2="20" y2="12" stroke="#5a0030" strokeWidth="2" strokeLinecap="round"/>
+          <path d="M12 12 Q20 8 28 12" fill="none" stroke="#5a0030" strokeWidth="2"/>
+          <path d="M12 18 Q20 14 28 18" fill="none" stroke="#5a0030" strokeWidth="2"/>
+          <path d="M12 24 Q20 20 28 24" fill="none" stroke="#5a0030" strokeWidth="2"/>
+          <line x1="20" y1="24" x2="20" y2="32" stroke="#5a0030" strokeWidth="2" strokeLinecap="round"/>
+          <line x1="12" y1="32" x2="28" y2="32" stroke="#5a0030" strokeWidth="2" strokeLinecap="round"/>
+          <line x1="15" y1="36" x2="25" y2="36" stroke="#5a0030" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      )
   }
 }
 
 interface Props {
   onDragStart: (e: React.DragEvent, type: EquipmentType) => void
+  onCollapse?: () => void
 }
 
-export default function EquipmentPalette({ onDragStart }: Props) {
+export default function EquipmentPalette({ onDragStart, onCollapse }: Props) {
   return (
     <aside style={{
-      width: 180,
+      width: '100%',
       background: '#f0f2f5',
       borderRight: '1px solid #c8d0d8',
       display: 'flex',
       flexDirection: 'column',
-      flexShrink: 0,
+      overflow: 'hidden',
       fontFamily: "'Segoe UI', 'Malgun Gothic', Arial, sans-serif",
       userSelect: 'none',
     }}>
       {/* Panel header */}
       <div style={{
-        padding: '8px 12px',
+        padding: '8px 8px 8px 12px',
         background: 'linear-gradient(to bottom, #1e3a7a 0%, #152d60 100%)',
         color: '#e8f0ff',
         fontSize: 11,
@@ -84,7 +140,22 @@ export default function EquipmentPalette({ onDragStart }: Props) {
           <rect x="1" y="7" width="5" height="5" rx="0.5" stroke="white" strokeWidth="1.2"/>
           <rect x="7" y="7" width="5" height="5" rx="0.5" stroke="white" strokeWidth="1.2"/>
         </svg>
-        Equipment
+        <span style={{ flex: 1 }}>Equipment</span>
+        {onCollapse && (
+          <button
+            onClick={onCollapse}
+            title="패널 접기"
+            style={{
+              background: 'none', border: 'none', color: '#a0b8e0',
+              cursor: 'pointer', padding: '2px 4px', borderRadius: 2,
+              fontSize: 14, lineHeight: 1, display: 'flex', alignItems: 'center',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#ffffff' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#a0b8e0' }}
+          >
+            ‹
+          </button>
+        )}
       </div>
 
       {/* Cable note */}
