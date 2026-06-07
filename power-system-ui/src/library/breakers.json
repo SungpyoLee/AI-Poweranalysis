@@ -1,0 +1,74 @@
+[
+  {
+    "id": "ls-vcb-24kv-25ka",
+    "manufacturer": "LS Electric",
+    "model": "VCB 24kV 25kA",
+    "standard": "IEC 62271-100",
+    "version": "2021",
+    "source": "builtin",
+    "params": {
+      "rated_kv": 24,
+      "rated_kA": 25,
+      "interrupt_kA": 25,
+      "r_ohm": 0,
+      "x_ohm": 0,
+      "breaker_type": "VCB",
+      "breaking_capacity_ka": 25,
+      "making_capacity_ka": 63
+    }
+  },
+  {
+    "id": "ls-vcb-24kv-31.5ka",
+    "manufacturer": "LS Electric",
+    "model": "VCB 24kV 31.5kA",
+    "standard": "IEC 62271-100",
+    "version": "2021",
+    "source": "builtin",
+    "params": {
+      "rated_kv": 24,
+      "rated_kA": 31.5,
+      "interrupt_kA": 31.5,
+      "r_ohm": 0,
+      "x_ohm": 0,
+      "breaker_type": "VCB",
+      "breaking_capacity_ka": 31.5,
+      "making_capacity_ka": 80
+    }
+  },
+  {
+    "id": "ls-vcb-24kv-40ka",
+    "manufacturer": "LS Electric",
+    "model": "VCB 24kV 40kA",
+    "standard": "IEC 62271-100",
+    "version": "2021",
+    "source": "builtin",
+    "params": {
+      "rated_kv": 24,
+      "rated_kA": 40,
+      "interrupt_kA": 40,
+      "r_ohm": 0,
+      "x_ohm": 0,
+      "breaker_type": "VCB",
+      "breaking_capacity_ka": 40,
+      "making_capacity_ka": 100
+    }
+  },
+  {
+    "id": "hyundai-vcb-24kv-25ka",
+    "manufacturer": "Hyundai Electric",
+    "model": "VCB 24kV 25kA",
+    "standard": "IEC 62271-100",
+    "version": "2022",
+    "source": "builtin",
+    "params": {
+      "rated_kv": 24,
+      "rated_kA": 25,
+      "interrupt_kA": 25,
+      "r_ohm": 0,
+      "x_ohm": 0,
+      "breaker_type": "VCB",
+      "breaking_capacity_ka": 25,
+      "making_capacity_ka": 63
+    }
+  }
+]

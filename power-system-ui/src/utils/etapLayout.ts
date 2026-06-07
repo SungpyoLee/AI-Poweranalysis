@@ -1,5 +1,5 @@
 import type { Node, Edge } from 'reactflow'
-import type { NodeData, BusProperties } from '../types'
+import type { NodeData, Bus } from '../types'
 
 // ── Layout constants ─────────────────────────────────────────────────────────
 export const SLOT_W    = 110   // horizontal width per child slot
@@ -17,13 +17,13 @@ export interface ETAPResult {
 
 // ── Internal tree ─────────────────────────────────────────────────────────────
 interface Branch {
-  chain: string[]       // ordered IDs starting from direct bus neighbor
-  subTree?: BusTree
+  chain:    string[]      // ordered IDs starting from direct bus neighbor
+  subTrees: BusTree[]     // 0 = leaf, 1 = normal, 2+ = 3W-transformer split
 }
 
 interface BusTree {
-  busId: string
-  branches: Branch[]
+  busId:      string
+  branches:   Branch[]
   totalWidth: number    // total horizontal space this subtree needs
 }
 
@@ -40,33 +40,34 @@ function buildAdj(edges: Edge[]): Map<string, string[]> {
 }
 
 // ── Trace chain from a bus neighbor outward ───────────────────────────────────
-// Returns chain of equipment IDs (in order) and optional sub-bus ID
+// Returns chain of equipment IDs (in order) and ALL downstream bus IDs.
+// Handles 3-winding transformers that connect to multiple buses simultaneously.
 function traceChain(
   startId: string,
-  adj: Map<string, string[]>,
+  adj:     Map<string, string[]>,
   nodeMap: Map<string, Node>,
   visited: Set<string>
-): { chain: string[]; subBusId?: string } {
+): { chain: string[]; subBusIds: string[] } {
   visited.add(startId)
   const chain: string[] = [startId]
   const startType = nodeMap.get(startId)?.type
 
   // Leaf nodes: stop immediately
   if (startType === 'motor' || startType === 'generator') {
-    return { chain }
+    return { chain, subBusIds: [] }
   }
 
   let current = startId
   while (true) {
     const neighbors = (adj.get(current) || []).filter(id => !visited.has(id))
 
-    // Sub-bus found?
-    const subBusId = neighbors.find(id => nodeMap.get(id)?.type === 'bus')
-    if (subBusId) {
-      return { chain, subBusId }
+    // Collect ALL downstream buses (handles 3W transformer with 2 sub-buses)
+    const subBusIds = neighbors.filter(id => nodeMap.get(id)?.type === 'bus')
+    if (subBusIds.length > 0) {
+      return { chain, subBusIds }
     }
 
-    // Continue chain with next equipment
+    // Continue chain with next non-bus equipment
     const next = neighbors.find(id => nodeMap.get(id)?.type !== 'bus')
     if (!next) break
 
@@ -78,13 +79,13 @@ function traceChain(
     if (t === 'motor' || t === 'generator') break
   }
 
-  return { chain }
+  return { chain, subBusIds: [] }
 }
 
 // ── Recursively build BusTree from a given bus ────────────────────────────────
 function buildBusTree(
-  busId: string,
-  adj: Map<string, string[]>,
+  busId:   string,
+  adj:     Map<string, string[]>,
   nodeMap: Map<string, Node>,
   visited: Set<string>
 ): BusTree {
@@ -96,21 +97,31 @@ function buildBusTree(
     const nbr = nodeMap.get(nbrId)
     if (!nbr || nbr.type === 'bus') continue
 
-    const { chain, subBusId } = traceChain(nbrId, adj, nodeMap, new Set(visited))
-    // mark chain as visited in parent visited set
+    const { chain, subBusIds } = traceChain(nbrId, adj, nodeMap, new Set(visited))
     chain.forEach(id => visited.add(id))
 
-    if (subBusId) {
-      visited.add(subBusId)
-      const subTree = buildBusTree(subBusId, adj, nodeMap, visited)
-      branches.push({ chain, subTree })
+    if (subBusIds.length > 0) {
+      // Build a sub-tree for each downstream bus (handles both 2W and 3W transformers)
+      const subTrees: BusTree[] = []
+      for (const subBusId of subBusIds) {
+        if (!visited.has(subBusId)) {
+          visited.add(subBusId)
+          subTrees.push(buildBusTree(subBusId, adj, nodeMap, visited))
+        }
+      }
+      branches.push({ chain, subTrees })
     } else {
-      branches.push({ chain })
+      branches.push({ chain, subTrees: [] })
     }
   }
 
-  // Compute total width
-  const contentW = branches.reduce((s, b) => s + (b.subTree?.totalWidth ?? SLOT_W), 0)
+  // Compute total width:
+  //   - Leaf branch (no subTrees): SLOT_W
+  //   - Branch with subTrees: sum of all subTree.totalWidths
+  const contentW = branches.reduce((s, b) => {
+    if (b.subTrees.length === 0) return s + SLOT_W
+    return s + b.subTrees.reduce((sw, st) => sw + st.totalWidth, 0)
+  }, 0)
   const totalWidth = Math.max(contentW + BUS_PAD * 2, SLOT_W + BUS_PAD * 2)
 
   return { busId, branches, totalWidth }
@@ -118,20 +129,26 @@ function buildBusTree(
 
 // ── Assign x/y positions from tree ───────────────────────────────────────────
 function assignPositions(
-  tree: BusTree,
-  centerX: number,
-  busY: number,
+  tree:      BusTree,
+  centerX:   number,
+  busY:      number,
   positions: Map<string, { x: number; y: number }>,
-  busInfo: Map<string, { width: number; slots: number[]; slotByNeighbor: Map<string, number> }>
+  busInfo:   Map<string, { width: number; slots: number[]; slotByNeighbor: Map<string, number> }>
 ) {
   const { busId, branches, totalWidth } = tree
   const busWidth = totalWidth - BUS_PAD * 2
   const busX = centerX - busWidth / 2
 
-  // Compute branch widths and slot positions
+  // Compute per-branch widths and centreX of each branch
   const slots: number[] = []
   const slotByNeighbor = new Map<string, number>()
-  const branchWidths = branches.map(b => b.subTree?.totalWidth ?? SLOT_W)
+
+  // Each branch occupies: sum(subTree.totalWidth) if has subTrees, else SLOT_W
+  const branchWidths = branches.map(b =>
+    b.subTrees.length === 0
+      ? SLOT_W
+      : b.subTrees.reduce((s, st) => s + st.totalWidth, 0)
+  )
   const contentW = branchWidths.reduce((s, w) => s + w, 0)
   let curX = centerX - contentW / 2
 
@@ -140,9 +157,9 @@ function assignPositions(
     const chainCenterX = curX + bw / 2
     const slotOffset = chainCenterX - busX
     slots.push(slotOffset)
-    slotByNeighbor.set(branch.chain[0], i)   // map first chain node → slot index
+    slotByNeighbor.set(branch.chain[0], i)
 
-    // Place chain items vertically (each level below the bus)
+    // Place chain items vertically below the bus
     branch.chain.forEach((id, lvl) => {
       positions.set(id, {
         x: chainCenterX - EQUIP_HALF,
@@ -150,10 +167,19 @@ function assignPositions(
       })
     })
 
-    // Place sub-bus and recurse
-    if (branch.subTree) {
+    // Place sub-trees — distributed horizontally within this branch's width
+    if (branch.subTrees.length === 1) {
       const subBusY = busY + LEVEL_H * (branch.chain.length + 1)
-      assignPositions(branch.subTree, chainCenterX, subBusY, positions, busInfo)
+      assignPositions(branch.subTrees[0], chainCenterX, subBusY, positions, busInfo)
+    } else if (branch.subTrees.length > 1) {
+      // Multiple sub-buses (3W transformer): lay them side-by-side
+      const subBusY = busY + LEVEL_H * (branch.chain.length + 1)
+      let subCurX = curX
+      for (const subTree of branch.subTrees) {
+        const subCenterX = subCurX + subTree.totalWidth / 2
+        assignPositions(subTree, subCenterX, subBusY, positions, busInfo)
+        subCurX += subTree.totalWidth
+      }
     }
 
     curX += bw
@@ -183,8 +209,8 @@ export function computeETAPLayout(
   }
 
   const rootBus = buses.reduce((best, b) => {
-    const va = ((b.data.props as BusProperties).vn_kv ?? 0)
-    const vb = ((best.data.props as BusProperties).vn_kv ?? 0)
+    const va = ((b.data.equipment as Bus).vn_kv ?? 0)
+    const vb = ((best.data.equipment as Bus).vn_kv ?? 0)
     return va > vb ? b : best
   })
 
@@ -192,11 +218,11 @@ export function computeETAPLayout(
   const tree = buildBusTree(rootBus.id, adj, nodeMap, visited)
 
   const positions = new Map<string, { x: number; y: number }>()
-  const busInfo = new Map<string, { width: number; slots: number[]; slotByNeighbor: Map<string, number> }>()
+  const busInfo   = new Map<string, { width: number; slots: number[]; slotByNeighbor: Map<string, number> }>()
 
   assignPositions(tree, 720, 80, positions, busInfo)
 
-  // Orphan nodes (not connected to main tree)
+  // Orphan nodes (not connected to main tree) → row at bottom
   let orphanX = 60
   for (const n of nodes) {
     if (!positions.has(n.id)) {
@@ -216,7 +242,7 @@ export function computeETAPLayout(
         data: {
           ...n.data,
           busWidth: info?.width ?? 200,
-          slots: info?.slots ?? [100],
+          slots:    info?.slots ?? [100],
         },
       }
     }
@@ -234,26 +260,7 @@ export function computeETAPLayout(
       return { ...e, sourceHandle: `s${slotIdx}`, targetHandle: 'top' }
     }
     if (tgtNode?.type === 'bus') {
-      const info = busInfo.get(e.target)
-      // find which slot this source chains into
-      // walk edges to find direct bus neighbor that is ancestor of e.source
-      let slotIdx = 0
-      for (const [neighborId, idx] of (info?.slotByNeighbor ?? [])) {
-        // if e.source is in the chain starting from neighborId, use this slot
-        if (neighborId === e.source) { slotIdx = idx; break }
-        // check if e.source is downstream of neighborId
-        const chainVisited = new Set<string>()
-        const chainAdj = buildAdj(edges)
-        const inChain = (id: string): boolean => {
-          if (id === e.source) return true
-          chainVisited.add(id)
-          return (chainAdj.get(id) || [])
-            .filter(x => !chainVisited.has(x) && nodeMap.get(x)?.type !== 'bus')
-            .some(x => inChain(x))
-        }
-        if (inChain(neighborId)) { slotIdx = idx; break }
-      }
-      return { ...e, sourceHandle: 'bottom', targetHandle: `s${slotIdx}` }
+      return { ...e, sourceHandle: 'bottom', targetHandle: 'top' }
     }
 
     // Equipment → Equipment

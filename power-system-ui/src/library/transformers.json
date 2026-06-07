@@ -1,0 +1,90 @@
+[
+  {
+    "id": "hyundai-30mva-154-22.9",
+    "manufacturer": "Hyundai Electric",
+    "model": "30MVA 154/22.9kV",
+    "standard": "IEC 60076",
+    "version": "2024",
+    "source": "builtin",
+    "params": {
+      "sn_mva": 30,
+      "vn_hv_kv": 154,
+      "vn_lv_kv": 22.9,
+      "vk_percent": 12.0,
+      "vkr_percent": 0.50,
+      "pfe_kw": 35,
+      "i0_percent": 0.10,
+      "tap_pos": 0,
+      "tap_neutral": 0,
+      "tap_min": -2,
+      "tap_max": 2,
+      "tap_step_percent": 2.5
+    }
+  },
+  {
+    "id": "hyundai-45mva-154-22.9",
+    "manufacturer": "Hyundai Electric",
+    "model": "45MVA 154/22.9kV",
+    "standard": "IEC 60076",
+    "version": "2024",
+    "source": "builtin",
+    "params": {
+      "sn_mva": 45,
+      "vn_hv_kv": 154,
+      "vn_lv_kv": 22.9,
+      "vk_percent": 12.0,
+      "vkr_percent": 0.47,
+      "pfe_kw": 45,
+      "i0_percent": 0.10,
+      "tap_pos": 0,
+      "tap_neutral": 0,
+      "tap_min": -2,
+      "tap_max": 2,
+      "tap_step_percent": 2.5
+    }
+  },
+  {
+    "id": "hyosung-30mva-154-22.9",
+    "manufacturer": "Hyosung Heavy Industries",
+    "model": "30MVA 154/22.9kV",
+    "standard": "IEC 60076",
+    "version": "2023",
+    "source": "builtin",
+    "params": {
+      "sn_mva": 30,
+      "vn_hv_kv": 154,
+      "vn_lv_kv": 22.9,
+      "vk_percent": 12.0,
+      "vkr_percent": 0.52,
+      "pfe_kw": 36,
+      "i0_percent": 0.11,
+      "tap_pos": 0,
+      "tap_neutral": 0,
+      "tap_min": -2,
+      "tap_max": 2,
+      "tap_step_percent": 2.5
+    }
+  },
+  {
+    "id": "hyosung-45mva-154-22.9",
+    "manufacturer": "Hyosung Heavy Industries",
+    "model": "45MVA 154/22.9kV",
+    "standard": "IEC 60076",
+    "version": "2023",
+    "source": "builtin",
+    "params": {
+      "sn_mva": 45,
+      "vn_hv_kv": 154,
+      "vn_lv_kv": 22.9,
+      "vk_percent": 12.0,
+      "vkr_percent": 0.48,
+      "pfe_kw": 46,
+      "i0_percent": 0.10,
+      "tap_pos": 0,
+      "tap_neutral": 0,
+      "tap_min": -2,
+      "tap_max": 2,
+      "tap_step_percent": 2.5
+    }
+  }
+]
