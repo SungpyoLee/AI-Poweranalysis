@@ -2,7 +2,7 @@ import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routers import loadflow, shortcircuit
+from routers import loadflow, shortcircuit, kakao_bot
 
 app = FastAPI(
     title="전력계통 해석 API",
@@ -19,6 +19,7 @@ app.add_middleware(
 
 app.include_router(loadflow.router)
 app.include_router(shortcircuit.router)
+app.include_router(kakao_bot.router)
 
 
 @app.exception_handler(Exception)
