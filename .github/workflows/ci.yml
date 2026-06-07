@@ -1,0 +1,40 @@
+name: CI — Build & Type Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: power-system-ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: power-system-ui
+        run: npm ci
+
+      - name: TypeScript type check
+        working-directory: power-system-ui
+        run: npx tsc --noEmit
+
+      - name: Production build
+        working-directory: power-system-ui
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: power-system-ui/dist/
+          retention-days: 7
