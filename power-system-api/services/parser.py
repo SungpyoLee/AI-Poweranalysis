@@ -140,7 +140,7 @@ def gemini_parse(text: str) -> dict:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
-            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
             generation_config={"response_mime_type": "application/json"},
         )
         response = model.generate_content(GEMINI_SYSTEM_PROMPT + "\n\n사용자 입력: " + text)

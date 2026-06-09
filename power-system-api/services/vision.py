@@ -78,7 +78,7 @@ async def recognize_nameplate(image_source: str | bytes) -> dict:
 
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
-            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
             generation_config={"response_mime_type": "application/json"},
         )
 
