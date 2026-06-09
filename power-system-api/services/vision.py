@@ -135,43 +135,73 @@ def nameplate_to_params(data: dict) -> tuple[str, dict]:
 def extract_image_url(body: dict) -> str | None:
     """
     카카오 i 오픈빌더가 이미지를 전달하는 다양한 위치를 순서대로 탐색.
+    오픈빌더 버전/설정에 따라 위치가 달라지므로 모두 확인.
     """
-    # 1. action.detailParams.sys_photo / image
-    detail = body.get("action", {}).get("detailParams", {})
-    for key in ("sys_photo", "image", "photo"):
-        if key in detail:
-            val = detail[key]
-            if isinstance(val, dict):
-                return val.get("value") or val.get("origin")
-            if isinstance(val, str) and val.startswith("http"):
-                return val
-
-    # 2. action.params
+    # 1. 오픈빌더 파라미터로 전달: action.params.imageUrl (커스텀 파라미터)
     params = body.get("action", {}).get("params", {})
-    for key in ("image", "photo", "secureImage", "imageUrl"):
-        if key in params:
-            val = params[key]
-            if isinstance(val, str) and val.startswith("http"):
-                return val
+    for key in ("imageUrl", "image", "photo", "secureImage", "sys.photo"):
+        val = params.get(key)
+        if val and isinstance(val, str) and val.startswith("http"):
+            return val
 
-    # 3. userRequest.params.media
-    media = body.get("userRequest", {}).get("params", {}).get("media", {})
+    # 2. action.detailParams — sys_photo, image, photo
+    detail = body.get("action", {}).get("detailParams", {})
+    for key in ("imageUrl", "sys.photo", "sys_photo", "image", "photo"):
+        val = detail.get(key)
+        if val is None:
+            continue
+        if isinstance(val, dict):
+            url = val.get("value") or val.get("origin") or val.get("url")
+            if url and isinstance(url, str) and url.startswith("http"):
+                return url
+        if isinstance(val, str) and val.startswith("http"):
+            return val
+
+    # 3. userRequest.params.media (카카오 채널 미디어 타입)
+    media = body.get("userRequest", {}).get("params", {}).get("media")
     if isinstance(media, dict) and media.get("type") == "image":
-        return media.get("url")
+        url = media.get("url") or media.get("secureUrl")
+        if url:
+            return url
 
-    # 4. userRequest.params.secureImage
-    secure = body.get("userRequest", {}).get("params", {}).get("secureImage")
-    if secure and isinstance(secure, str) and secure.startswith("http"):
-        return secure
+    # 4. userRequest.params 직접 탐색
+    ur_params = body.get("userRequest", {}).get("params", {})
+    for key in ("secureImage", "imageUrl", "image", "photo"):
+        val = ur_params.get(key)
+        if val and isinstance(val, str) and val.startswith("http"):
+            return val
 
-    # 5. utterance에 URL이 직접 포함된 경우
+    # 5. utterance 자체가 이미지 URL인 경우
     utterance = body.get("userRequest", {}).get("utterance", "")
     if utterance.startswith("http") and any(
-        ext in utterance.lower() for ext in (".jpg", ".jpeg", ".png", ".webp")
+        ext in utterance.lower() for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")
     ):
         return utterance
 
-    return None
+    # 6. body 전체에서 http 이미지 URL 재귀 탐색 (최후 수단)
+    def find_image_url_recursive(obj, depth=0):
+        if depth > 5:
+            return None
+        if isinstance(obj, str):
+            if obj.startswith("http") and any(
+                ext in obj.lower() for ext in (".jpg", ".jpeg", ".png", ".webp")
+            ):
+                return obj
+            if "mud-kage.kakao.com" in obj or "kakaocdn" in obj:
+                return obj
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                result = find_image_url_recursive(v, depth + 1)
+                if result:
+                    return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = find_image_url_recursive(item, depth + 1)
+                if result:
+                    return result
+        return None
+
+    return find_image_url_recursive(body)
 
 
 # ── 인식 결과 포맷팅 ──────────────────────────────────────────────────────────

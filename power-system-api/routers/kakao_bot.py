@@ -184,20 +184,7 @@ async def kakao_webhook(request: Request):
         import json as _json
         logger.info(f"[DEBUG PAYLOAD] {_json.dumps(body, ensure_ascii=False)}")
 
-        # ── 특수 명령 처리 ──────────────────────────────────────────────────
-        if not user_text or user_text in ("처음으로", "시작", "start"):
-            return JSONResponse(kakao_text(WELCOME_TEXT))
-
-        if any(kw in user_text for kw in RESET_KEYWORDS):
-            clear_context(user_id)
-            return JSONResponse(kakao_text(
-                "✅ 이전 계산 조건이 초기화됐습니다.\n새로운 조건을 입력해주세요."
-            ))
-
-        if any(kw in user_text for kw in ("도움말", "help", "사용법", "기능")):
-            return JSONResponse(kakao_text(HELP_TEXT))
-
-        # ── 이미지 수신 → 명판 인식 ─────────────────────────────────────────
+        # ── 이미지 수신 → 명판 인식 (텍스트 체크보다 먼저!) ──────────────
         image_url = extract_image_url(body)
         if image_url:
             logger.info(f"[카카오봇] 이미지 수신: {image_url[:60]}…")
@@ -229,6 +216,19 @@ async def kakao_webhook(request: Request):
             qr.append({"label": "도움말", "action": "message", "messageText": "도움말"})
 
             return JSONResponse(kakao_text(result_text, quick_replies=qr))
+
+        # ── 텍스트 비어있으면 환영 메시지 ────────────────────────────────────
+        if not user_text or user_text in ("처음으로", "시작", "start"):
+            return JSONResponse(kakao_text(WELCOME_TEXT))
+
+        if any(kw in user_text for kw in RESET_KEYWORDS):
+            clear_context(user_id)
+            return JSONResponse(kakao_text(
+                "✅ 이전 계산 조건이 초기화됐습니다.\n새로운 조건을 입력해주세요."
+            ))
+
+        if any(kw in user_text for kw in ("도움말", "help", "사용법", "기능")):
+            return JSONResponse(kakao_text(HELP_TEXT))
 
         # ── 명판 인식 요청 키워드 ───────────────────────────────────────────
         if any(kw in user_text for kw in ("명판", "사진", "찍었어", "이미지", "명판인식")):
