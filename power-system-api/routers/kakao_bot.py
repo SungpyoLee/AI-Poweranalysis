@@ -295,4 +295,12 @@ async def kakao_webhook(request: Request):
 # ── 헬스체크 ─────────────────────────────────────────────────────────────────
 @router.get("/health")
 def health():
-    return {"status": "ok", "service": "kakao-bot", "users_in_memory": len(user_context)}
+    import os
+    key = os.getenv("GEMINI_API_KEY", "")
+    return {
+        "status": "ok",
+        "service": "kakao-bot",
+        "users_in_memory": len(user_context),
+        "gemini_key_set": bool(key),
+        "gemini_key_preview": key[:6] + "..." if len(key) > 6 else "(empty)",
+    }
