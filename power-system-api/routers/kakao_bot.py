@@ -180,6 +180,10 @@ async def kakao_webhook(request: Request):
 
         logger.info(f"[카카오봇] user={user_id[:8]}… 입력: {user_text!r}")
 
+        # ── 전체 payload 디버그 로그 (이미지 구조 파악용) ──────────────────
+        import json as _json
+        logger.info(f"[DEBUG PAYLOAD] {_json.dumps(body, ensure_ascii=False)}")
+
         # ── 특수 명령 처리 ──────────────────────────────────────────────────
         if not user_text or user_text in ("처음으로", "시작", "start"):
             return JSONResponse(kakao_text(WELCOME_TEXT))
