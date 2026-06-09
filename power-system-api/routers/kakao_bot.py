@@ -5,13 +5,18 @@ POST /kakao/webhook  ← 카카오 서버에서 호출
 대화 맥락 기억:
   user_context[user_id] = {"query_type": str, "params": dict}
   핵심 파라미터(전압·용량) 없는 메시지 → 이전 컨텍스트에 덮어씌움
-  ex) "380V 75kW 150m" → 저장
-      "거리 200m로 바꿔줘" → 전압·용량 유지, 거리만 변경
+
+명판 인식:
+  이미지 수신 → Gemini Vision → 파라미터 추출 → 계산 제안
 """
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from services.parser import smart_parse, REQUIRED_BY_TYPE
 from services.calculator import calculate
+from services.vision import (
+    extract_image_url, recognize_nameplate,
+    nameplate_to_params, format_nameplate_result,
+)
 import logging
 
 router = APIRouter(prefix="/kakao", tags=["카카오봇"])
@@ -23,6 +28,10 @@ MAX_USERS = 2000  # 메모리 누수 방지
 
 # ── 도움말 ────────────────────────────────────────────────────────────────────
 HELP_TEXT = """⚡ PowerFlow 전기 계산 챗봇
+
+【📷 명판 자동 인식】
+전동기·변압기 명판 사진을 보내주세요
+→ 파라미터 자동 추출 후 계산
 
 【케이블 선정】
 예) 380V 75kW 거리 150m 전압강하 3%
@@ -183,6 +192,57 @@ async def kakao_webhook(request: Request):
 
         if any(kw in user_text for kw in ("도움말", "help", "사용법", "기능")):
             return JSONResponse(kakao_text(HELP_TEXT))
+
+        # ── 이미지 수신 → 명판 인식 ─────────────────────────────────────────
+        image_url = extract_image_url(body)
+        if image_url:
+            logger.info(f"[카카오봇] 이미지 수신: {image_url[:60]}…")
+
+            # 인식 진행 중 안내 (Gemini Vision 처리 시간 ~2초)
+            data = await recognize_nameplate(image_url)
+
+            if "error" in data:
+                return JSONResponse(kakao_text(format_nameplate_result(data)))
+
+            # 인식 결과 포맷팅
+            result_text = format_nameplate_result(data)
+
+            # 추출된 파라미터를 컨텍스트에 저장
+            query_type, params = nameplate_to_params(data)
+            if params:
+                save_context(user_id, query_type, params)
+
+            # 계산 유도 버튼
+            qr = []
+            if data.get("voltage_v") and data.get("power_kw"):
+                qr.append({"label": "케이블 선정",
+                           "action": "message", "messageText": "케이블 선정해줘"})
+                qr.append({"label": "기동 전압강하",
+                           "action": "message", "messageText": "기동 전압강하 계산해줘"})
+            if data.get("sn_kva"):
+                qr.append({"label": "단락전류 계산",
+                           "action": "message", "messageText": "단락전류 계산해줘"})
+            qr.append({"label": "도움말", "action": "message", "messageText": "도움말"})
+
+            return JSONResponse(kakao_text(result_text, quick_replies=qr))
+
+        # ── 명판 인식 요청 키워드 ───────────────────────────────────────────
+        if any(kw in user_text for kw in ("명판", "사진", "찍었어", "이미지", "명판인식")):
+            return JSONResponse(kakao_text(
+                "📷 명판 사진을 바로 보내주세요!\n\n"
+                "전동기·변압기 명판이 잘 보이게 찍어서\n"
+                "카카오톡 채팅창에 올려주시면\n"
+                "전기 파라미터를 자동으로 읽어드립니다.\n\n"
+                "💡 잘 찍는 법:\n"
+                "• 명판 전체가 프레임 안에 들어오게\n"
+                "• 빛 반사 없는 각도로\n"
+                "• 흐리지 않게 가까이서",
+                quick_replies=[
+                    {"label": "직접 입력할게요", "action": "message",
+                     "messageText": "380V 75kW 거리 150m"},
+                    {"label": "도움말", "action": "message", "messageText": "도움말"},
+                ]
+            ))
 
         # ── 재계산 명령 ──────────────────────────────────────────────────────
         if any(kw in user_text for kw in RECALC_KEYWORDS):
