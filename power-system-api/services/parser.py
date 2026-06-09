@@ -141,7 +141,7 @@ def gemini_parse(text: str) -> dict:
         from google.genai import types
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             contents=GEMINI_SYSTEM_PROMPT + "\n\n사용자 입력: " + text,
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
