@@ -90,7 +90,7 @@ async def recognize_nameplate(image_source: str | bytes) -> dict:
         img = Image.open(BytesIO(img_bytes))
 
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.0-flash-lite",
             contents=[NAMEPLATE_PROMPT, img],
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
