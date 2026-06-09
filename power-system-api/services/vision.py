@@ -73,14 +73,11 @@ async def recognize_nameplate(image_source: str | bytes) -> dict:
         return {"error": "GEMINI_API_KEY 미설정"}
 
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
         from PIL import Image
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            "gemini-1.5-flash",
-            generation_config={"response_mime_type": "application/json"},
-        )
+        client = genai.Client(api_key=api_key)
 
         # 이미지 로드
         if isinstance(image_source, str):
@@ -92,7 +89,11 @@ async def recognize_nameplate(image_source: str | bytes) -> dict:
 
         img = Image.open(BytesIO(img_bytes))
 
-        response = model.generate_content([NAMEPLATE_PROMPT, img])
+        response = await client.aio.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[NAMEPLATE_PROMPT, img],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
         data = json.loads(response.text)
 
         # null 제거

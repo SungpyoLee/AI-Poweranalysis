@@ -137,15 +137,15 @@ def gemini_parse(text: str) -> dict:
         return {}
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            "gemini-1.5-flash",
-            generation_config={"response_mime_type": "application/json"},
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=GEMINI_SYSTEM_PROMPT + "\n\n사용자 입력: " + text,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
-        response = model.generate_content(GEMINI_SYSTEM_PROMPT + "\n\n사용자 입력: " + text)
         data = json.loads(response.text)
-        # null 값 제거
         return {k: v for k, v in data.items() if v is not None}
     except Exception as e:
         logger.error(f"Gemini 파서 오류: {e}")
