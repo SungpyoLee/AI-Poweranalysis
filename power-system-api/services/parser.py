@@ -12,11 +12,14 @@ logger = logging.getLogger(__name__)
 
 # ── 계산 유형 키워드 ──────────────────────────────────────────────────────────
 QUERY_KEYWORDS = {
+    'capacitor':   ['역률개선', '콘덴서', '커패시터', 'kvar', 'capacitor', '진상', '역률 개선', '목표 역률'],
+    'generator':   ['발전기', 'generator', 'genset', '비상발전', '발전기 용량'],
+    'breaker':     ['차단기', 'mccb', 'acb', 'mcb', 'elb', '누전', 'breaker', '차단기 선정', '차단기 정격'],
     'cable':       ['케이블', '전선', 'cable', 'cv', '단면적', '선정', '선로', '전압강하', 'vd', 'voltage drop'],
     'shortcircuit':['단락', '단락전류', '고장전류', 'ik', 'isc', 'short circuit', '사고전류', 'ikss'],
     'transformer': ['변압기', '변압', 'tr', 'transformer', '용량선정', 'mva'],
     'relay':       ['계전기', '보호', 'relay', 'ocr', 'tms', 'pickup', '정정', '과전류'],
-    'motor':       ['전동기', '모터', 'motor', '기동', 'starting', 'dol', 'star-delta'],
+    'motor':       ['전동기', '모터', 'motor', '기동', 'starting', 'star-delta'],
 }
 
 def detect_query_type(text: str) -> str:
@@ -96,7 +99,27 @@ def regex_parse(text: str) -> dict:
     if re.search(r'단상|1상|single\s*phase|1φ', text, re.IGNORECASE):
         result['phases'] = 1
     else:
-        result['phases'] = 3  # 기본값: 3상
+        result['phases'] = 3
+
+    # 목표 역률: "목표 0.95", "→ 0.95", "0.95로 개선"
+    tpf = re.search(
+        r'(?:목표\s*역률?|개선\s*후|target\s*pf)\s*[=:은는→]?\s*(0\.\d+)'
+        r'|→\s*(0\.\d+)'
+        r'|(0\.\d+)\s*(?:로|으로)\s*(?:개선|향상)',
+        text, re.IGNORECASE)
+    if tpf:
+        val = tpf.group(1) or tpf.group(2) or tpf.group(3)
+        result['target_pf'] = float(val)
+
+    # 기동 방식
+    if re.search(r'소프트.?스타터?|soft.?start', text, re.IGNORECASE):
+        result['start_method'] = 'soft_starter'
+    elif re.search(r'스타.?델타|Y.?[ΔD∆]|star.?delta', text, re.IGNORECASE):
+        result['start_method'] = 'star_delta'
+    elif re.search(r'인버터|VFD|vfd', text, re.IGNORECASE):
+        result['start_method'] = 'vfd'
+    elif re.search(r'DOL|dol|직입', text, re.IGNORECASE):
+        result['start_method'] = 'dol'
 
     return result
 
@@ -159,6 +182,9 @@ REQUIRED_BY_TYPE = {
     'transformer':  ['power_kw', 'power_kva'],
     'relay':        ['voltage_v'],
     'motor':        ['voltage_v', 'power_kw'],
+    'capacitor':    ['power_kw', 'power_factor'],
+    'generator':    ['power_kw'],
+    'breaker':      ['voltage_v', 'power_kw'],
 }
 
 def smart_parse(text: str) -> tuple[str, dict]:

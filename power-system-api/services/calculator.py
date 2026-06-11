@@ -354,6 +354,171 @@ def format_motor(p: dict) -> str:
     )
 
 
+# ── 역률 개선 콘덴서 용량 ─────────────────────────────────────────────────────
+STD_CAP_KVAR = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500, 600, 800, 1000]
+
+def format_capacitor(p: dict) -> str:
+    power_kw  = p.get('power_kw')
+    pf_cur    = p.get('power_factor', 0.8)
+    pf_tgt    = p.get('target_pf', 0.95)
+    voltage_v = p.get('voltage_v', 380)
+
+    if not power_kw:
+        return "⚠️ 부하 용량(kW)을 입력해주세요.\n예) 380V 100kW 역률 0.75 목표 0.95 콘덴서"
+
+    if pf_cur >= pf_tgt:
+        return f"✅ 현재 역률 {pf_cur:.2f}가 목표 {pf_tgt:.2f} 이상입니다.\n콘덴서 불필요."
+
+    tan1  = math.tan(math.acos(max(min(pf_cur, 0.9999), 0.01)))
+    tan2  = math.tan(math.acos(max(min(pf_tgt, 0.9999), 0.01)))
+    q_req = power_kw * (tan1 - tan2)
+
+    selected = next((s for s in STD_CAP_KVAR if s >= q_req), STD_CAP_KVAR[-1])
+
+    # 실제 선정 용량으로 달성 역률 역산
+    q_act  = selected
+    sin1   = math.sin(math.acos(max(min(pf_cur, 0.9999), 0.01)))
+    kva_b  = power_kw / pf_cur
+    q_load = kva_b * sin1
+    q_new  = max(q_load - q_act, 0)
+    kva_a  = math.sqrt(power_kw**2 + q_new**2)
+    pf_ach = min(power_kw / kva_a, 1.0) if kva_a > 0 else 1.0
+
+    vn_str  = f"{voltage_v/1000:.1f}kV" if voltage_v >= 1000 else f"{voltage_v:.0f}V"
+    i_b = kva_b * 1000 / (math.sqrt(3) * voltage_v)
+    i_a = kva_a * 1000 / (math.sqrt(3) * voltage_v)
+
+    return (
+        f"🔋 역률 개선 콘덴서 계산\n"
+        f"{'─'*24}\n"
+        f"부하: {power_kw:.0f}kW | {vn_str}\n"
+        f"현재 역률: {pf_cur:.2f} → 목표: {pf_tgt:.2f}\n"
+        f"{'─'*24}\n"
+        f"▶ 필요 용량: {q_req:.1f}kVAR\n"
+        f"▶ 선정: {selected}kVAR 콘덴서\n"
+        f"{'─'*24}\n"
+        f"달성 역률: {pf_ach:.3f}\n"
+        f"전류 절감: {i_b:.1f}A → {i_a:.1f}A\n"
+        f"  ({(i_b - i_a) / i_b * 100:.1f}% 감소)\n"
+        f"{'─'*24}\n"
+        f"※ 공진 주파수 검토 권장 (5·7차 고조파)"
+    )
+
+
+# ── 발전기 용량 선정 ──────────────────────────────────────────────────────────
+STD_GEN_KVA = [30, 50, 75, 100, 150, 200, 250, 300, 400, 500,
+               600, 750, 800, 1000, 1250, 1500, 2000, 2500, 3000, 4000, 5000]
+
+START_METHOD = {
+    'dol':          (6.0, 'DOL(직입)'),
+    'star_delta':   (2.0, 'Y-Δ 기동'),
+    'soft_starter': (2.5, '소프트스타터'),
+    'vfd':          (1.1, 'VFD(인버터)'),
+}
+
+def format_generator(p: dict) -> str:
+    power_kw = p.get('power_kw')
+    if not power_kw:
+        return "⚠️ 전동기 용량(kW)을 입력해주세요.\n예) 500kW 전동기 DOL 기동 발전기 용량"
+
+    pf       = p.get('power_factor', 0.85)
+    eff      = p.get('efficiency', 0.94)
+    method   = p.get('start_method', 'dol')
+    lrc, method_name = START_METHOD.get(method, START_METHOD['dol'])
+
+    # 전동기 정격 kVA, 기동 kVA
+    rated_kva = power_kw / (pf * eff)
+    start_kva = rated_kva * lrc
+
+    # 발전기 선정: Xd''=0.25, 허용 전압강하 25% 기준
+    # S_gen ≥ S_start × Xd'' / VD = S_start × 0.25 / 0.25 = S_start
+    xd_pp    = 0.25
+    vd_allow = 0.25
+    gen_min  = start_kva * xd_pp / vd_allow  # = start_kva (이 기준에서)
+    gen_min  = max(gen_min, rated_kva * 1.25)  # 최소 정격 부하의 125%
+
+    selected = next((s for s in STD_GEN_KVA if s >= gen_min), STD_GEN_KVA[-1])
+    gen_kw   = selected * 0.8  # pf=0.8 기준 출력 kW
+
+    # 기동 시 전압강하 역산
+    vd_act = start_kva / (start_kva + selected) * 100
+
+    return (
+        f"🏭 발전기 용량 선정\n"
+        f"{'─'*24}\n"
+        f"전동기: {power_kw:.0f}kW | {method_name}\n"
+        f"기동전류 배수: {lrc:.1f}× | 정격 {rated_kva:.0f}kVA\n"
+        f"{'─'*24}\n"
+        f"기동 kVA: {start_kva:.0f}kVA\n"
+        f"{'─'*24}\n"
+        f"▶ 최소 발전기: {gen_min:.0f}kVA\n"
+        f"▶ 선정: {selected}kVA ({gen_kw:.0f}kW) 발전기\n"
+        f"기동 전압강하: {vd_act:.1f}%"
+        + (" ✅" if vd_act <= 25 else " ⚠️ 25% 초과") + "\n"
+        f"{'─'*24}\n"
+        f"※ 운전 부하 포함 시 재검토 필요"
+    )
+
+
+# ── 차단기 정격 선정 ──────────────────────────────────────────────────────────
+STD_MCCB = [6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125,
+            160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250,
+            1600, 2000, 2500, 3200, 4000]
+
+def format_breaker(p: dict) -> str:
+    voltage_v = p.get('voltage_v')
+    power_kw  = p.get('power_kw', 0)
+    power_kva = p.get('power_kva', 0)
+    pf        = p.get('power_factor', 0.85)
+    eff       = p.get('efficiency', 0.94)
+    phases    = p.get('phases', 3)
+
+    if not voltage_v:
+        return "⚠️ 전압과 부하 용량을 입력해주세요.\n예) 380V 75kW 전동기 MCCB 선정"
+
+    vn_str = f"{voltage_v/1000:.1f}kV" if voltage_v >= 1000 else f"{voltage_v:.0f}V"
+
+    # 전부하 전류 계산
+    if power_kw:
+        if phases == 3:
+            i_fl = power_kw * 1000 / (math.sqrt(3) * voltage_v * pf * eff)
+        else:
+            i_fl = power_kw * 1000 / (voltage_v * pf * eff)
+        load_str = f"{power_kw:.0f}kW 전동기"
+        factor, note = 2.5, "전동기 기동전류 250%"
+    elif power_kva:
+        if phases == 3:
+            i_fl = power_kva * 1000 / (math.sqrt(3) * voltage_v)
+        else:
+            i_fl = power_kva * 1000 / voltage_v
+        load_str = f"{power_kva:.0f}kVA"
+        factor, note = 1.25, "피더 125%"
+    else:
+        return "⚠️ 부하 용량(kW 또는 kVA)을 입력해주세요."
+
+    trip_min = i_fl * factor
+    selected = next((s for s in STD_MCCB if s >= trip_min), STD_MCCB[-1])
+    type_str = "ACB" if selected >= 1000 else "MCCB"
+
+    # ELB (누전차단기) 정격
+    elb = next((s for s in STD_MCCB if s >= i_fl * 1.25), STD_MCCB[-1])
+
+    return (
+        f"⚡ 차단기 선정 (IEC 60947-2)\n"
+        f"{'─'*24}\n"
+        f"계통: {vn_str} | 부하: {load_str}\n"
+        f"전부하전류: {i_fl:.1f}A\n"
+        f"{'─'*24}\n"
+        f"▶ 최소 정격: {trip_min:.0f}A ({note})\n"
+        f"▶ {type_str} 선정: {selected}A\n"
+        f"{'─'*24}\n"
+        f"ELB(누전차단기): {elb}A / 30mA\n"
+        f"케이블 허용전류 ≥ {selected}A 확인\n"
+        f"{'─'*24}\n"
+        f"※ 차단용량(Ics) ≥ 계통 단락전류"
+    )
+
+
 # ── 통합 계산 디스패처 ────────────────────────────────────────────────────────
 def calculate(query_type: str, params: dict) -> str:
     dispatch = {
@@ -362,6 +527,9 @@ def calculate(query_type: str, params: dict) -> str:
         'transformer':  format_transformer,
         'relay':        format_relay,
         'motor':        format_motor,
+        'capacitor':    format_capacitor,
+        'generator':    format_generator,
+        'breaker':      format_breaker,
     }
     fn = dispatch.get(query_type, format_cable)
     return fn(params)
