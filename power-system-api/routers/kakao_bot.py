@@ -9,8 +9,10 @@ POST /kakao/webhook  ← 카카오 서버에서 호출
 명판 인식:
   이미지 수신 → Gemini Vision → 파라미터 추출 → 계산 제안
 """
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+import uuid
+from collections import OrderedDict
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import JSONResponse, Response
 from services.parser import smart_parse, REQUIRED_BY_TYPE
 from services.calculator import calculate
 from services.vision import (
@@ -24,7 +26,18 @@ logger = logging.getLogger(__name__)
 
 # ── 인메모리 컨텍스트 (서버 재시작 시 초기화, UptimeRobot으로 유지) ─────────
 user_context: dict[str, dict] = {}
-MAX_USERS = 2000  # 메모리 누수 방지
+MAX_USERS = 2000
+
+# ── 차트 이미지 캐시 ──────────────────────────────────────────────────────────
+_img_cache: OrderedDict[str, bytes] = OrderedDict()
+MAX_IMAGES = 150
+
+def _cache_image(data: bytes) -> str:
+    uid = uuid.uuid4().hex[:12]
+    _img_cache[uid] = data
+    if len(_img_cache) > MAX_IMAGES:
+        _img_cache.popitem(last=False)
+    return uid
 
 # ── 도움말 ────────────────────────────────────────────────────────────────────
 HELP_TEXT = """⚡ PowerFlow 전기 계산 챗봇
@@ -139,29 +152,74 @@ def kakao_text(text: str, quick_replies: list | None = None) -> dict:
         },
     }
 
-def kakao_text_with_context_replies(text: str, query_type: str) -> dict:
-    """계산 완료 후 — 맥락 활용 빠른 버튼 표시"""
+_WEB_BTN = {"label": "🌐 웹앱 분석", "action": "webLink",
+             "webLinkUrl": "https://power-system-ui.vercel.app"}
+
+def _context_qr(query_type: str) -> list:
     label_map = {
-        "cable":        [("거리 2배로",    "거리 바꿔줘"),
-                         ("역률 0.9로",    "역률 0.9로 변경"),
-                         ("지중 매설로",   "지중 매설로 변경"),
-                         ("다시 계산",     "다시 계산해줘")],
-        "shortcircuit": [("다시 계산",     "다시 계산해줘"),
-                         ("케이블 선정",   "케이블 선정"),
-                         ("변압기 선정",   "변압기 선정"),
-                         ("도움말",        "도움말")],
-        "transformer":  [("수용률 0.9로",  "수용률 0.9로 변경"),
-                         ("다시 계산",     "다시 계산해줘"),
-                         ("케이블 선정",   "케이블 선정"),
-                         ("도움말",        "도움말")],
+        "cable":        [("거리 2배로",   "거리 바꿔줘"),
+                         ("역률 0.9로",   "역률 0.9로 변경"),
+                         ("지중 매설로",  "지중 매설로 변경"),
+                         ("다시 계산",    "다시 계산해줘")],
+        "shortcircuit": [("다시 계산",    "다시 계산해줘"),
+                         ("케이블 선정",  "케이블 선정"),
+                         ("변압기 선정",  "변압기 선정"),
+                         ("도움말",       "도움말")],
+        "transformer":  [("수용률 0.9로", "수용률 0.9로 변경"),
+                         ("다시 계산",    "다시 계산해줘"),
+                         ("케이블 선정",  "케이블 선정"),
+                         ("도움말",       "도움말")],
     }
     pairs = label_map.get(query_type, [
         ("다시 계산", "다시 계산해줘"),
         ("케이블 선정", "케이블 선정"),
         ("도움말", "도움말"),
     ])
-    qr = [{"label": lbl, "action": "message", "messageText": msg}
-          for lbl, msg in pairs]
+    qr = [{"label": lbl, "action": "message", "messageText": msg} for lbl, msg in pairs]
+    qr.append(_WEB_BTN)
+    return qr
+
+
+def kakao_text_with_context_replies(text: str, query_type: str) -> dict:
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [{"simpleText": {"text": text}}],
+            "quickReplies": _context_qr(query_type),
+        },
+    }
+
+
+def kakao_image_response(text: str, query_type: str, params: dict) -> dict:
+    """차트 이미지 + 텍스트 복합 응답. 차트 실패 시 텍스트만 반환."""
+    chart_bytes = None
+    try:
+        from services.chart import cable_chart, sc_chart, tr_chart
+        if query_type == 'cable' and params.get('voltage_v') and params.get('power_kw'):
+            chart_bytes = cable_chart(params)
+        elif query_type == 'shortcircuit' and params.get('voltage_v'):
+            chart_bytes = sc_chart(params)
+        elif query_type == 'transformer' and (params.get('power_kw') or params.get('power_kva')):
+            chart_bytes = tr_chart(params)
+    except Exception as e:
+        logger.warning(f"차트 생성 실패 (텍스트 응답으로 대체): {e}")
+
+    qr = _context_qr(query_type)
+
+    if chart_bytes:
+        uid     = _cache_image(chart_bytes)
+        img_url = f"https://ai-poweranalysis.onrender.com/kakao/image/{uid}"
+        return {
+            "version": "2.0",
+            "template": {
+                "outputs": [
+                    {"simpleImage": {"imageUrl": img_url, "altText": "계산 결과 차트"}},
+                    {"simpleText": {"text": text}},
+                ],
+                "quickReplies": qr,
+            },
+        }
+
     return {
         "version": "2.0",
         "template": {
@@ -259,7 +317,7 @@ async def kakao_webhook(request: Request):
             params     = ctx["params"]
             logger.info(f"[카카오봇] 재계산: type={query_type}, params={params}")
             answer = calculate(query_type, params)
-            return JSONResponse(kakao_text_with_context_replies(answer, query_type))
+            return JSONResponse(kakao_image_response(answer, query_type, params))
 
         # ── 파싱 + 컨텍스트 병합 ────────────────────────────────────────────
         raw_type, raw_params = smart_parse(user_text)
@@ -273,16 +331,7 @@ async def kakao_webhook(request: Request):
         # 계산 성공 시 컨텍스트 저장
         save_context(user_id, query_type, params)
 
-        # 이전 컨텍스트가 있었으면 "이전 조건 유지" 안내 추가
-        prev_ctx = load_context(user_id)
-        ctx_note = ""
-        if prev_ctx and any(k in prev_ctx.get("params", {}) for k in
-                            ("voltage_v", "power_kw", "distance_m")):
-            ctx_note = "\n\n💡 일부 조건만 바꿔 재계산하려면:\n예) \"거리 200m로 바꿔줘\""
-
-        return JSONResponse(
-            kakao_text_with_context_replies(answer + ctx_note, query_type)
-        )
+        return JSONResponse(kakao_image_response(answer, query_type, params))
 
     except Exception as e:
         logger.error(f"[카카오봇] 오류: {e}", exc_info=True)
@@ -291,6 +340,15 @@ async def kakao_webhook(request: Request):
             "입력 형식을 확인해주세요.\n\n"
             "'도움말'을 입력하면 예시를 볼 수 있습니다."
         ))
+
+# ── 차트 이미지 서빙 ─────────────────────────────────────────────────────────
+@router.get("/image/{uid}")
+async def serve_image(uid: str):
+    data = _img_cache.get(uid)
+    if not data:
+        raise HTTPException(status_code=404, detail="Image not found or expired")
+    return Response(content=data, media_type="image/png")
+
 
 # ── 헬스체크 ─────────────────────────────────────────────────────────────────
 @router.get("/health")

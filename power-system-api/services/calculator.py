@@ -53,6 +53,7 @@ class CableResult:
     phases:          int
     ok:              bool
     message:         str
+    max_dist_m:      float = 0.0
 
 
 def calc_cable(
@@ -108,6 +109,17 @@ def calc_cable(
 
     ok = vd <= vdrop_limit_pct
 
+    # 허용 최대 거리 역산
+    r_c, x_c = candidate[4], candidate[5]
+    z_eff = r_c * pf + x_c * sin_phi
+    if z_eff > 0:
+        if phases == 3:
+            max_dist_m = (vdrop_limit_pct / 100 * voltage_v * parallel) / (math.sqrt(3) * i_fl * z_eff) * 1000
+        else:
+            max_dist_m = (vdrop_limit_pct / 100 * voltage_v * parallel) / (2 * i_fl * z_eff) * 1000
+    else:
+        max_dist_m = 99999.0
+
     install_names = {'air': '공중(트레이)', 'duct': '덕트', 'ground': '지중매설'}
     method_name   = install_names.get(install_method, install_method)
     parallel_str  = f" × {parallel}병렬" if parallel > 1 else ""
@@ -122,6 +134,7 @@ def calc_cable(
         install_method  = method_name,
         phases          = phases,
         ok              = ok,
+        max_dist_m      = round(max_dist_m, 0),
         message         = (
             f"CV {candidate[0]:.0f}mm²{parallel_str}\n"
             f"설치: {method_name} | 허용전류: {candidate[col_idx] * parallel:.0f}A\n"
@@ -149,8 +162,27 @@ def format_cable(p: dict) -> str:
         parallel        = p.get('parallel', 1),
     )
 
-    vn_str = f"{voltage_v/1000:.1f}kV" if voltage_v >= 1000 else f"{voltage_v:.0f}V"
+    vn_str    = f"{voltage_v/1000:.1f}kV" if voltage_v >= 1000 else f"{voltage_v:.0f}V"
     phase_str = "3상" if r.phases == 3 else "단상"
+    parallel  = p.get('parallel', 1)
+
+    # 병렬 제안 (VD 초과 시)
+    parallel_note = ""
+    if not r.ok:
+        for np_ in range(2, 6):
+            rp = calc_cable(
+                voltage_v=voltage_v, power_kw=power_kw,
+                distance_m=p.get('distance_m', 100),
+                power_factor=p.get('power_factor', 0.85),
+                efficiency=p.get('efficiency', 1.0),
+                vdrop_limit_pct=r.vdrop_limit_pct,
+                install_method=p.get('install_method', 'duct'),
+                phases=p.get('phases', 3),
+                parallel=np_,
+            )
+            if rp.ok:
+                parallel_note = f"\n💡 {np_}병렬 시 VD: {rp.vdrop_pct:.2f}% ✅"
+                break
 
     return (
         f"📋 케이블 선정 결과\n"
@@ -159,9 +191,10 @@ def format_cable(p: dict) -> str:
         f"거리: {p.get('distance_m', 100):.0f}m | VD 한도: {r.vdrop_limit_pct}%\n"
         f"{'─'*24}\n"
         f"▶ {r.message}\n"
+        f"허용거리: {r.max_dist_m:.0f}m (VD {r.vdrop_limit_pct}% 기준)"
+        f"{parallel_note}\n"
         f"{'─'*24}\n"
-        f"IEC 60364 / KS C IEC 60502 기준\n"
-        f"📱 상세 계통 해석 → power-system-ui.vercel.app"
+        f"IEC 60364 / KS C IEC 60502 기준"
     )
 
 
