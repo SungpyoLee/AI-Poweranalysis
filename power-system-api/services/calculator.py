@@ -199,34 +199,63 @@ def format_cable(p: dict) -> str:
 
 
 # ── 단락전류 간이 계산 (IEC 60909) ────────────────────────────────────────────
+@dataclass
+class ShortCircuitResult:
+    z_total_ohm: float
+    ikss_ka:     float
+    ip_ka:       float
+    sk_mva:      float
+    tr_included: bool
+
+
+def calc_shortcircuit(
+    voltage_v: float,
+    sc_mva:    float = 1000,
+    tr_kva:    float = 0,
+    vk_pct:    float = 6.0,
+) -> ShortCircuitResult:
+    """IEC 60909 간이 등가전원 단락전류 계산. Z[Ω] = c·Vn²/Sk, Ik''[kA] = c·Vn/(√3·Z)."""
+    c_max = 1.1
+    vn_kv = voltage_v / 1000
+
+    z_k = (c_max * vn_kv**2) / sc_mva  # Ω
+
+    tr_included = tr_kva > 0
+    if tr_included:
+        z_tr = (vk_pct / 100) * (vn_kv**2 / (tr_kva / 1000))
+        z_total = z_k + z_tr
+    else:
+        z_total = z_k
+
+    ikss_ka = c_max * vn_kv / (math.sqrt(3) * z_total)
+    # kappa ≈ 1.8 (보수적 근사, R/X=0.1 가정)
+    kappa   = 1.8
+    ip_ka   = kappa * math.sqrt(2) * ikss_ka
+    sk_mva  = ikss_ka * math.sqrt(3) * vn_kv
+
+    return ShortCircuitResult(
+        z_total_ohm = z_total,
+        ikss_ka     = ikss_ka,
+        ip_ka       = ip_ka,
+        sk_mva      = sk_mva,
+        tr_included = tr_included,
+    )
+
+
 def format_shortcircuit(p: dict) -> str:
     voltage_v = p.get('voltage_v')
     if not voltage_v:
         return "⚠️ 계통 전압을 입력해주세요.\n예) 22.9kV 계통 단락용량 1000MVA 단락전류 계산"
 
     sc_mva = p.get('sc_mva', 1000)
-    c_max  = 1.1
     vn_kv  = voltage_v / 1000
 
-    # Thevenin 임피던스
-    z_k = (c_max * vn_kv**2) / sc_mva  # Ω
-
     # 변압기 직렬 임피던스 (입력 있으면)
-    tr_kva  = p.get('power_kva', 0) or (p.get('power_kw', 0) / 0.85 if p.get('power_kw') else 0)
-    vk_pct  = p.get('vk_pct', 6.0)
-    if tr_kva > 0:
-        z_tr = (vk_pct / 100) * (vn_kv**2 / (tr_kva / 1000))
-        z_total = z_k + z_tr
-        tr_note = f"변압기 {tr_kva:.0f}kVA (vk={vk_pct}%) 포함"
-    else:
-        z_total = z_k
-        tr_note = "변압기 미포함"
+    tr_kva = p.get('power_kva', 0) or (p.get('power_kw', 0) / 0.85 if p.get('power_kw') else 0)
+    vk_pct = p.get('vk_pct', 6.0)
 
-    i_base  = sc_mva * 1000 / (math.sqrt(3) * vn_kv)  # A
-    ikss_ka = (c_max / z_total) * (vn_kv / math.sqrt(3)) / 1000
-    # kappa ≈ 1.8 (보수적 근사, R/X=0.1 가정)
-    kappa   = 1.8
-    ip_ka   = kappa * math.sqrt(2) * ikss_ka
+    r = calc_shortcircuit(voltage_v, sc_mva, tr_kva, vk_pct)
+    tr_note = f"변압기 {tr_kva:.0f}kVA (vk={vk_pct}%) 포함" if r.tr_included else "변압기 미포함"
 
     return (
         f"⚡ 단락전류 계산 결과 (IEC 60909)\n"
@@ -234,9 +263,9 @@ def format_shortcircuit(p: dict) -> str:
         f"계통: {vn_kv:.1f}kV | 계통용량: {sc_mva:.0f}MVA\n"
         f"{tr_note}\n"
         f"{'─'*24}\n"
-        f"▶ Ik'' (초기 대칭): {ikss_ka:.2f} kA\n"
-        f"▶ Ip  (첨두전류): {ip_ka:.2f} kA\n"
-        f"▶ Sk'' (단락용량): {ikss_ka * math.sqrt(3) * vn_kv:.1f} MVA\n"
+        f"▶ Ik'' (초기 대칭): {r.ikss_ka:.2f} kA\n"
+        f"▶ Ip  (첨두전류): {r.ip_ka:.2f} kA\n"
+        f"▶ Sk'' (단락용량): {r.sk_mva:.1f} MVA\n"
         f"{'─'*24}\n"
         f"※ 간이 계산 (κ=1.8 가정)\n"
         f"📱 정밀 계산 → power-system-ui.vercel.app"
@@ -244,6 +273,39 @@ def format_shortcircuit(p: dict) -> str:
 
 
 # ── 변압기 용량 선정 ──────────────────────────────────────────────────────────
+@dataclass
+class TransformerResult:
+    total_kva:    float
+    required_kva: float
+    selected_kva: float
+    loading_pct:  float
+    ok:           bool
+
+
+def calc_transformer(
+    power_kw:  float = 0,
+    power_kva: float = 0,
+    pf:        float = 0.85,
+    df:        float = 0.8,
+    count:     int   = 1,
+) -> TransformerResult:
+    """수용률 적용 총 부하 → 표준 변압기 용량 선정."""
+    total_kw  = power_kw * count if power_kw else 0
+    total_kva = power_kva * count if power_kva else total_kw / max(pf, 0.01)
+
+    required_kva = total_kva * df
+    selected = next((s for s in STD_TR_SIZES if s >= required_kva), STD_TR_SIZES[-1])
+    loading  = required_kva / selected * 100
+
+    return TransformerResult(
+        total_kva    = total_kva,
+        required_kva = required_kva,
+        selected_kva = selected,
+        loading_pct  = loading,
+        ok           = loading <= 80,
+    )
+
+
 def format_transformer(p: dict) -> str:
     power_kw  = p.get('power_kw', 0)
     power_kva = p.get('power_kva', 0)
@@ -251,31 +313,47 @@ def format_transformer(p: dict) -> str:
     df        = p.get('demand_factor', 0.8)
     count     = p.get('count', 1)
 
-    total_kw  = power_kw * count if power_kw else 0
-    total_kva = power_kva * count if power_kva else total_kw / max(pf, 0.01)
-
-    if total_kva == 0:
+    if not power_kw and not power_kva:
         return "⚠️ 부하 용량을 입력해주세요.\n예) 100kW 전동기 5대 수용률 0.8 변압기 용량"
 
-    required_kva = total_kva * df
-    selected = next((s for s in STD_TR_SIZES if s >= required_kva), STD_TR_SIZES[-1])
-    loading  = required_kva / selected * 100
+    r = calc_transformer(power_kw, power_kva, pf, df, count)
 
     return (
         f"🔌 변압기 용량 선정\n"
         f"{'─'*24}\n"
-        f"총 부하: {total_kva:.0f}kVA (수용률 {df*100:.0f}% 적용)\n"
-        f"필요 용량: {required_kva:.0f}kVA\n"
+        f"총 부하: {r.total_kva:.0f}kVA (수용률 {df*100:.0f}% 적용)\n"
+        f"필요 용량: {r.required_kva:.0f}kVA\n"
         f"{'─'*24}\n"
-        f"▶ 선정: {selected}kVA 변압기\n"
-        f"▶ 부하율: {loading:.1f}%"
-        + (" ✅" if loading <= 80 else " ⚠️ 80% 초과 — 상위 용량 검토") + "\n"
+        f"▶ 선정: {r.selected_kva}kVA 변압기\n"
+        f"▶ 부하율: {r.loading_pct:.1f}%"
+        + (" ✅" if r.ok else " ⚠️ 80% 초과 — 상위 용량 검토") + "\n"
         f"{'─'*24}\n"
         f"📱 계통 해석 → power-system-ui.vercel.app"
     )
 
 
 # ── 과전류 계전기 정정 (간이) ─────────────────────────────────────────────────
+@dataclass
+class RelayResult:
+    i_rated_a:   float
+    pickup_lo_a: float
+    pickup_hi_a: float
+    tms:         float
+
+
+def calc_relay(voltage_v: float, kva: float) -> RelayResult:
+    """정격전류 대비 125~150% 픽업, IEC Normal Inverse TMS=0.3 참고값."""
+    vn_kv = voltage_v / 1000
+    i_rated = kva / (math.sqrt(3) * vn_kv)  # A (1차측)
+
+    return RelayResult(
+        i_rated_a   = i_rated,
+        pickup_lo_a = i_rated * 1.25,
+        pickup_hi_a = i_rated * 1.50,
+        tms         = 0.3,  # IEC Normal Inverse, 10× 배수에서 약 0.5초 동작 기준
+    )
+
+
 def format_relay(p: dict) -> str:
     voltage_v = p.get('voltage_v')
     power_kw  = p.get('power_kw', 0)
@@ -290,24 +368,17 @@ def format_relay(p: dict) -> str:
     if kva == 0:
         return "⚠️ 부하 용량(kW 또는 kVA)을 입력해주세요."
 
-    i_rated = kva / (math.sqrt(3) * vn_kv)  # A (1차측)
-
-    # 픽업 전류: 정격의 125~150%
-    pickup_lo = i_rated * 1.25
-    pickup_hi = i_rated * 1.50
-
-    # TMS (IEC Normal Inverse, TMS=0.3 기준): 동작시간 ≈ 0.5s @ 10× pickup
-    tms_typical = 0.3
+    r = calc_relay(voltage_v, kva)
 
     return (
         f"🛡️ OCR 정정 참고값\n"
         f"{'─'*24}\n"
         f"계통: {vn_kv:.1f}kV | 부하: {kva:.0f}kVA\n"
-        f"정격전류: {i_rated:.1f}A\n"
+        f"정격전류: {r.i_rated_a:.1f}A\n"
         f"{'─'*24}\n"
-        f"▶ 픽업전류: {pickup_lo:.1f}A ~ {pickup_hi:.1f}A\n"
+        f"▶ 픽업전류: {r.pickup_lo_a:.1f}A ~ {r.pickup_hi_a:.1f}A\n"
         f"  (정격의 125~150%)\n"
-        f"▶ TMS: {tms_typical} (IEC Normal Inverse 기준)\n"
+        f"▶ TMS: {r.tms} (IEC Normal Inverse 기준)\n"
         f"  → 10× 배수에서 약 0.5초 동작\n"
         f"{'─'*24}\n"
         f"※ 보호협조 검토 필수\n"
@@ -316,6 +387,42 @@ def format_relay(p: dict) -> str:
 
 
 # ── 전동기 기동 전압강하 ──────────────────────────────────────────────────────
+@dataclass
+class MotorResult:
+    i_rated_a: float
+    i_start_a: float
+    vdrop_pct: float
+    ok:        bool
+    lrc:       float
+
+
+def calc_motor(
+    voltage_v: float,
+    power_kw:  float,
+    sc_mva:    float = 500,
+    pf_run:    float = 0.85,
+    eff:       float = 0.94,
+    lrc:       float = 6.0,  # 기동전류 배수 (DOL 기준)
+) -> MotorResult:
+    """DOL 직입 기동 시 정격/기동전류 및 계통 전압강하 (ΔV/V = Istart·Zk/Vsys)."""
+    vn_kv = voltage_v / 1000
+
+    sm_mva  = power_kw / 1000 / (pf_run * eff)
+    i_rated = sm_mva * 1000 / (math.sqrt(3) * vn_kv)
+    i_start = i_rated * lrc
+
+    z_sys = (1.1 * vn_kv**2) / sc_mva  # Ω
+    vdrop = (i_start * z_sys) / (vn_kv / math.sqrt(3) * 1000) * 100
+
+    return MotorResult(
+        i_rated_a = i_rated,
+        i_start_a = i_start,
+        vdrop_pct = vdrop,
+        ok        = vdrop <= 15,  # 일반적 한도 15%
+        lrc       = lrc,
+    )
+
+
 def format_motor(p: dict) -> str:
     voltage_v = p.get('voltage_v')
     power_kw  = p.get('power_kw')
@@ -324,20 +431,11 @@ def format_motor(p: dict) -> str:
     if not voltage_v or not power_kw:
         return "⚠️ 전압과 전동기 용량을 입력해주세요.\n예) 6.6kV 500kW 전동기 기동 전압강하"
 
-    vn_kv   = voltage_v / 1000
-    pf_run  = p.get('power_factor', 0.85)
-    eff     = p.get('efficiency', 0.94)
-    lrc     = 6.0  # 기동전류 배수 (DOL 기준)
+    vn_kv  = voltage_v / 1000
+    pf_run = p.get('power_factor', 0.85)
+    eff    = p.get('efficiency', 0.94)
 
-    sm_mva  = power_kw / 1000 / (pf_run * eff)
-    i_rated = sm_mva * 1000 / (math.sqrt(3) * vn_kv)
-    i_start = i_rated * lrc
-
-    # 기동 시 전압강하: ΔV/V = Istart × Zk / Vsys
-    z_sys   = (1.1 * vn_kv**2) / sc_mva  # Ω
-    vdrop   = (i_start * z_sys) / (vn_kv / math.sqrt(3) * 1000) * 100
-
-    ok = vdrop <= 15  # 일반적 한도 15%
+    r = calc_motor(voltage_v, power_kw, sc_mva, pf_run, eff)
 
     return (
         f"⚙️ 전동기 기동 전압강하\n"
@@ -345,10 +443,10 @@ def format_motor(p: dict) -> str:
         f"전동기: {power_kw:.0f}kW / {vn_kv:.1f}kV (DOL 기동)\n"
         f"계통: {sc_mva:.0f}MVA\n"
         f"{'─'*24}\n"
-        f"▶ 정격전류: {i_rated:.1f}A\n"
-        f"▶ 기동전류: {i_start:.1f}A ({lrc:.0f}배)\n"
-        f"▶ 기동 전압강하: {vdrop:.1f}%"
-        + (" ✅" if ok else " ❌ 15% 초과 — Star-Delta/Soft-Starter 검토") + "\n"
+        f"▶ 정격전류: {r.i_rated_a:.1f}A\n"
+        f"▶ 기동전류: {r.i_start_a:.1f}A ({r.lrc:.0f}배)\n"
+        f"▶ 기동 전압강하: {r.vdrop_pct:.1f}%"
+        + (" ✅" if r.ok else " ❌ 15% 초과 — Star-Delta/Soft-Starter 검토") + "\n"
         f"{'─'*24}\n"
         f"📱 상세 분석 → power-system-ui.vercel.app"
     )
