@@ -15,7 +15,13 @@ QUERY_KEYWORDS = {
     'capacitor':   ['역률개선', '콘덴서', '커패시터', 'kvar', 'capacitor', '진상', '역률 개선', '목표 역률'],
     'generator':   ['발전기', 'generator', 'genset', '비상발전', '발전기 용량'],
     'breaker':     ['차단기', 'mccb', 'acb', 'mcb', 'elb', '누전', 'breaker', '차단기 선정', '차단기 정격'],
-    'cable':       ['케이블', '전선', 'cable', 'cv', '단면적', '선정', '선로', '전압강하', 'vd', 'voltage drop'],
+    # 주의: '선정'·'전압강하'는 여기 있었으나 제거함 — 둘 다 다른 유형(변압기/전동기)의
+    # 도움말 예시에도 그대로 등장하는 일반적인 표현이라, dict 순회 순서상 cable이
+    # transformer(변압기)·motor(전동기)보다 먼저 검사되면서 "총 부하 500kW 변압기 선정",
+    # "6.6kV 500kW 전동기 기동 전압강하" 같은 문장을 전부 케이블 선정으로 잘못 분류시켰다.
+    # cable 고유 키워드(케이블/cv/단면적/선로 등)만으로도 케이블 예시들은 여전히 매치되고,
+    # 아무 유형도 매치 안 되면 detect_query_type의 기본값 자체가 'cable'이라 문제없다.
+    'cable':       ['케이블', '전선', 'cable', 'cv', '단면적', '선로', 'vd', 'voltage drop'],
     'shortcircuit':['단락', '단락전류', '고장전류', 'ik', 'isc', 'short circuit', '사고전류', 'ikss'],
     'transformer': ['변압기', '변압', 'tr', 'transformer', '용량선정', 'mva'],
     'relay':       ['계전기', '보호', 'relay', 'ocr', 'tms', 'pickup', '정정', '과전류'],
@@ -39,12 +45,14 @@ def regex_parse(text: str) -> dict:
         val, unit = float(v.group(1)), v.group(2)
         result['voltage_v'] = val * 1000 if unit.lower() == 'kv' else val
 
-    # 용량: "75kW", "100KW", "500kVA", "2MVA", "100HP", "75 kw"
-    p = re.search(r'(\d+\.?\d*)\s*(MVA|KVA|kVA|kW|KW|MW|HP|hp)\b', text)
+    # 용량: "75kW", "100KW", "500kVA", "100HP", "75 kw"
+    # 주의: MVA는 이 봇에서 항상 "계통 단락용량"을 의미하므로(예시 참고) 여기서 잡지 않고
+    # 아래 sc_mva 정규식으로 넘긴다 — 예전엔 여기서 먼저 매치돼 power_kva로 잘못 들어가면서
+    # "22.9kV 계통 1000MVA 단락전류 계산"(도움말 예시 그대로) 조차 sc_mva가 비어 계산이 틀렸었다.
+    p = re.search(r'(\d+\.?\d*)\s*(KVA|kVA|kW|KW|MW|HP|hp)\b', text)
     if p:
         val, unit = float(p.group(1)), p.group(2).upper()
-        if unit == 'MVA':   result['power_kva'] = val * 1000
-        elif unit in ('KVA','kVA'): result['power_kva'] = val
+        if unit in ('KVA','kVA'): result['power_kva'] = val
         elif unit == 'MW':  result['power_kw']  = val * 1000
         elif unit == 'HP':  result['power_kw']  = val * 0.746
         else:               result['power_kw']  = val
