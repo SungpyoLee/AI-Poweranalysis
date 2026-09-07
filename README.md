@@ -1,10 +1,11 @@
 # PowerFlow Analyzer
 
-산업 전력계통 설계·해석을 위한 오프라인 단선도(SLD) 에디터.
+산업 전력계통 설계·해석을 위한 오프라인 단선도(SLD) 에디터 + 카카오톡 전기계산 챗봇.
 
 **배포 주소:** https://power-system-ui.vercel.app  
 **API 서버:** https://ai-poweranalysis.onrender.com  
-**최종 업데이트:** 2026-05-31
+**카카오 웹훅:** POST `/kakao/webhook` (카카오 i 오픈빌더 스킬 서버로 등록)  
+**최종 업데이트:** 2026-09-07
 
 ---
 
@@ -30,7 +31,9 @@
 | 상태 관리 | Zustand |
 | 백엔드 | FastAPI + uvicorn |
 | 전력 해석 | pandapower (IEC 60909) |
-| 배포 | Vercel (프론트) + Render (백엔드) |
+| 카카오톡 챗봇 | 정규식 파서 + Gemini 2.0 Flash-Lite (무료 티어, 자연어 보완·명판 Vision 인식) |
+| 챗봇 차트 | matplotlib (케이블/단락/변압기 결과 PNG) |
+| 배포 | Vercel (프론트) + Render (백엔드, 카카오봇 API 동일 서버) |
 | 권장 Node.js | v20 LTS (v24도 동작하나 일부 이슈 있음 — 트러블슈팅 참고) |
 
 ---
@@ -128,6 +131,18 @@ node serve.cjs      # → http://127.0.0.1:9000
 - 시작 화면 WelcomeScreen (최근 파일 목록 포함)
 - 키보드 단축키 모달 (툴바 ? 버튼)
 
+### 10. 카카오톡 전기계산 챗봇 (`power-system-api/routers/kakao_bot.py`)
+SLD 에디터와 별개로 동작하는 두 번째 축. 카카오 i 오픈빌더 웹훅으로 자연어 전기 계산 질의에 답한다.
+
+- **파서**: 정규식 1차 파싱(전압·용량·거리·역률·효율 등) → 필수 파라미터 누락 시 Gemini 2.0 Flash-Lite로 보완
+- **지원 계산 유형**: 케이블 선정(전압강하 기반 단면적·병렬 케이블 수 산정) · 단락전류(IEC 계열) · 변압기 용량 선정 · OCR 계전기 정정값 · 전동기 기동 전압강하 · 역률개선 콘덴서(kVAR) · 비상발전기 용량(기동방식별) · 차단기(MCCB/ACB/ELB) 정격
+- **대화 맥락 기억**: `user_context`에 이전 질의 유형·파라미터 저장 → "거리 200m로 바꿔줘"처럼 일부 조건만 바꿔 재계산, "다시 계산해줘"/"초기화" 키워드 지원
+- **명판 자동 인식**: 전동기·변압기 명판 사진 전송 → Gemini Vision이 전압/출력/전류/역률/효율/회전수 등 추출 → 바로 계산 제안
+- **차트 응답**: matplotlib으로 계산 결과 PNG 생성, 인메모리 캐시(`/kakao/image/{uid}`)로 서빙 후 카카오 simpleImage+simpleText 복합 응답
+- **헬스체크**: `GET /kakao/health` — 메모리상 사용자 수, `GEMINI_API_KEY` 설정 여부 확인용
+
+> SLD 쪽 계산 엔진(pandapower)과는 별도의 경량 계산 로직(`services/calculator.py`)을 사용 — 아직 통합되어 있지 않음.
+
 ---
 
 ## 파일 구조
@@ -137,15 +152,20 @@ Poweranalysis/
 ├── README.md                          ← 이 파일 (통합 문서)
 │
 ├── power-system-api/                  # FastAPI 백엔드
-│   ├── main.py
+│   ├── main.py                        # 라우터 등록: loadflow / shortcircuit / kakao_bot
 │   ├── models/
 │   │   ├── network.py
 │   │   └── results.py
 │   ├── routers/
 │   │   ├── loadflow.py
-│   │   └── shortcircuit.py
+│   │   ├── shortcircuit.py
+│   │   └── kakao_bot.py               # 카카오 웹훅 — 파싱·계산·컨텍스트·이미지 서빙
 │   ├── services/
-│   │   └── solver.py
+│   │   ├── solver.py                  # SLD 쪽 pandapower 해석
+│   │   ├── parser.py                  # 카카오봇 — 정규식+Gemini 파라미터 파서
+│   │   ├── calculator.py              # 카카오봇 — 케이블/단락/변압기/계전기/전동기/콘덴서/발전기/차단기 계산
+│   │   ├── vision.py                  # 카카오봇 — Gemini Vision 명판 인식
+│   │   └── chart.py                   # 카카오봇 — matplotlib 결과 차트 생성
 │   ├── requirements.txt
 │   └── render.yaml
 │
@@ -255,6 +275,15 @@ Windows + Node.js 18 이상에서 `localhost`가 IPv6으로 해석되어 Vite �
 - Toolbar 재구성: 가져오기 그룹 분리, LF 버튼 단일화, 단축키 모달
 - 다중 선택 전압 일괄 변경
 
+### 10단계 — 카카오톡 전기계산 챗봇 (2026-06)
+- 정규식 + Gemini Flash Free 하이브리드 파서로 자연어 질의 처리 (`services/parser.py`)
+- 케이블 선정 / 단락전류 / 변압기 용량 계산기 구현, 이후 OCR 계전기 정정·전동기 기동전압강하·역률개선 콘덴서·비상발전기·차단기 선정까지 확장 (`services/calculator.py`)
+- 대화 맥락 기억 (부분 조건 변경, 재계산·초기화 키워드)
+- `google-generativeai` → `google-genai` SDK 마이그레이션, 모델명 `gemini-2.0-flash-lite`로 고정 (무료 티어 안정화까지 3차 시행착오)
+- Gemini Vision 기반 전동기/변압기 명판 사진 인식 (`services/vision.py`) — 카카오 페이로드 이미지 URL 추출 위치가 오픈빌더 설정마다 달라 6단계 방어 로직으로 강화
+- matplotlib 차트 이미지 응답 + 웹앱 연동 quickReply 버튼 (`services/chart.py`)
+- `GET /kakao/health`로 배포 상태·Gemini 키 설정 여부 확인 가능
+
 ---
 
 ## API 명세
@@ -274,6 +303,15 @@ N-1 신뢰도 해석.
 ### POST `/cablesizing`
 케이블 굵기 선정.
 
+### POST `/kakao/webhook`
+카카오 i 오픈빌더 스킬 서버 웹훅. 텍스트 발화 또는 이미지(명판 사진) 수신 → 파싱/인식 후 카카오 스킬 응답(JSON) 반환.
+
+### GET `/kakao/image/{uid}`
+`/kakao/webhook` 응답에 포함된 결과 차트 PNG 서빙 (인메모리 캐시, 최대 150장).
+
+### GET `/kakao/health`
+카카오봇 헬스체크. 메모리상 사용자 수, `GEMINI_API_KEY` 설정 여부 반환.
+
 ---
 
 ## 배포 정보
@@ -281,8 +319,10 @@ N-1 신뢰도 해석.
 | 항목 | 내용 |
 |------|------|
 | 프론트엔드 | Vercel — GitHub push 시 자동 재배포 |
-| 백엔드 | Render — 무료 티어 (콜드 스타트 ~30초) |
-| 환경변수 | `VITE_API_URL` — 프론트에서 API 주소 지정 |
+| 백엔드 | Render — 무료 티어 (콜드 스타트 ~30초), SLD API와 카카오봇 API 동일 서버에서 서빙 |
+| 환경변수 (프론트) | `VITE_API_URL` — 프론트에서 API 주소 지정 |
+| 환경변수 (백엔드) | `GEMINI_API_KEY` — 카카오봇 자연어 파서·명판 Vision 인식에 필요 (없으면 정규식 파서만 동작, 이미지 인식 불가) |
+| 카카오 설정 | 카카오 i 오픈빌더 → 스킬 서버 URL을 `https://ai-poweranalysis.onrender.com/kakao/webhook`으로 등록 |
 
 ---
 
