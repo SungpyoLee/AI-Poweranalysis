@@ -24,6 +24,14 @@ export interface DetectedSymbol {
 }
 
 // ── Classification pattern table ───────────────────────────────────────────────
+// 주의: JS 정규식의 \b(word boundary)는 \w([A-Za-z0-9_]) 기준으로만 판정되므로
+// 한글 문자에는 전혀 적용되지 않는다 — \b가 한글 앞뒤에 오면 그 경계에서 다시
+// \w↔비\w 전이가 일어나지 않아 매치 자체가 성립하지 않는다. 예전엔 '변압기'·
+// '차단기'·'발전기'·'부하'·'콘덴서'·'리액터' 같은 순수 한글 키워드가 전부
+// \b(...)\b 안에 라틴 문자와 섞여 들어가 있어서, 한글로만 적힌 명판/라벨은
+// OCR Auto-Draw에서 절대로 해당 장비로 분류되지 못했다(무한정 매치 실패).
+// 그래서 라틴 약어는 기존처럼 \b로 감싸 단어 중간 부분매치를 막고,
+// 한글 키워드는 경계 없는 별도 패턴으로 분리했다.
 const PATTERNS: Record<SymbolType, RegExp[]> = {
   bus: [
     /^BUS[-_\s]?\d*/i,
@@ -37,16 +45,18 @@ const PATTERNS: Record<SymbolType, RegExp[]> = {
     /^TR[-_]?\d+/i,
     /^T[-_]?\d+\b/i,
     /^PTR\d*/i,
-    /\b(XFMR|TRANSF?|변압기)\b/i,
+    /\b(XFMR|TRANSF?)\b/i,
     /\d+\s*MVA\b/i,
     /\d+\s*\/\s*\d+\s*kV/i,
+    /변압기/,
   ],
   breaker: [
     /^CB[-_]?\d+/i,
     /^(VCB|ACB|GCB|MCCB|MCB)[-_]?\d*/i,
     /^(DS|ES|IS|LBS)[-_]?\d*/i,
     /^52[-_]?\w+/,
-    /\b(차단기|개폐기|BREAKER|BKR)\b/i,
+    /\b(BREAKER|BKR)\b/i,
+    /차단기|개폐기/,
   ],
   motor: [
     /^M[-_]?\d+/i,
@@ -58,7 +68,8 @@ const PATTERNS: Record<SymbolType, RegExp[]> = {
     /^GEN[-_]?\d*/i,
     /^DG[-_]?\d*/i,
     /^ALT[-_]?\d*/i,
-    /\b(GENERATOR|발전기|GENSET)\b/i,
+    /\b(GENERATOR|GENSET)\b/i,
+    /발전기/,
   ],
   load: [
     /^L[-_]?\d+/i,
@@ -66,7 +77,8 @@ const PATTERNS: Record<SymbolType, RegExp[]> = {
     /^MCC[-_]?\d*/i,
     /^DP[-_]?\d*/i,
     /^PANEL[-_]?\w+/i,
-    /\b(부하|FEEDER|SWITCHBOARD|SWB)\b/i,
+    /\b(FEEDER|SWITCHBOARD|SWB)\b/i,
+    /부하/,
   ],
   transformer3w: [
     /^T3[-_]?\d+/i,
@@ -76,16 +88,18 @@ const PATTERNS: Record<SymbolType, RegExp[]> = {
   capacitor: [
     /^C[-_]?\d+/i,
     /^CAP[-_]?\d*/i,
-    /\b(CAPACITOR|콘덴서|MVAR)\b/i,
+    /\b(CAPACITOR|MVAR)\b/i,
+    /콘덴서/,
   ],
   reactor: [
     /^R[-_]?\d+/i,
     /^REACT[-_]?\d*/i,
-    /\b(REACTOR|리액터)\b/i,
+    /\bREACTOR\b/i,
+    /리액터/,
   ],
 }
 
-function classifyText(text: string): { type: SymbolType | null; score: number } {
+export function classifyText(text: string): { type: SymbolType | null; score: number } {
   let best: SymbolType | null = null
   let bestScore = 0
 
