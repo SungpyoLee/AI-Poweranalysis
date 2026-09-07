@@ -28,6 +28,10 @@ jobs:
         working-directory: power-system-ui
         run: npx tsc --noEmit
 
+      - name: Unit tests (vitest)
+        working-directory: power-system-ui
+        run: npm test
+
       - name: Production build
         working-directory: power-system-ui
         run: npm run build

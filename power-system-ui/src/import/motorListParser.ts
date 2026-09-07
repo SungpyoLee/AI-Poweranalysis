@@ -48,6 +48,19 @@ const MCC_ALIASES  = ['mcc', 'switchboard', 'panel', 'distribution board', 'mcc 
                       'panel no', 'panel name']
 
 // ── 내부 헬퍼 ──────────────────────────────────────────────────────────────────
+/**
+ * 짧은(3자 이하) 별칭은 단어 경계로 감싸 우연한 부분일치를 막는다.
+ * 예: 별칭 'tag'(3자)가 헤더 'Voltage'에 "vol-TAG-e"로 우연히 포함되어
+ * 전압 컬럼을 태그 컬럼으로 잘못 인식하던 버그가 있었다 — 긴 구문 별칭
+ * (예: 'motor tag', 'rated power')은 이런 우연한 충돌 위험이 낮아 기존처럼
+ * 단순 부분일치를 허용한다.
+ */
+function looselyContains(haystack: string, needle: string): boolean {
+  if (needle.length > 3) return haystack.includes(needle)
+  const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^a-z0-9가-힣])${esc}([^a-z0-9가-힣]|$)`, 'i').test(haystack)
+}
+
 function findColumn(headers: string[], aliases: string[]): number {
   const lc = headers.map(h => h?.toString().toLowerCase().trim().replace(/\s+/g, ' ') ?? '')
   // 1순위: 완전 일치
@@ -57,7 +70,7 @@ function findColumn(headers: string[], aliases: string[]): number {
   }
   // 2순위: 포함 관계
   for (const alias of aliases) {
-    const idx = lc.findIndex(h => h.includes(alias) || alias.includes(h))
+    const idx = lc.findIndex(h => looselyContains(h, alias) || looselyContains(alias, h))
     if (idx >= 0) return idx
   }
   return -1
@@ -96,7 +109,97 @@ function normalizeVoltageToV(v: number): number {
   return v < 20 ? v * 1000 : v
 }
 
-// ── 메인 파서 ─────────────────────────────────────────────────────────────────
+// ── 순수 파싱 로직 (시트 → 2차원 배열이 주어진 이후) ────────────────────────────
+// File/FileReader 없이 그대로 테스트하기 위해 XLSX 로딩과 분리했다.
+export function parseMotorListRows(raw: unknown[][]): ParsedMotorList {
+  if (raw.length < 2) {
+    return {
+      rows: [], mccGroups: new Map(),
+      detectedColumns: { tag: '', kw: '', pf: '', voltage: '', mcc: '' },
+      warnings: ['데이터 행이 없습니다. 헤더 + 데이터 행이 최소 2줄 필요합니다.'],
+      totalRows: 0, skippedRows: 0,
+    }
+  }
+
+  // ── 헤더 행 탐지 (최대 10행 내에서 가장 많은 컬럼이 채워진 행) ──────────
+  let headerRowIdx = 0
+  let maxFilled = 0
+  for (let i = 0; i < Math.min(10, raw.length); i++) {
+    const filled = (raw[i] as unknown[]).filter(c => c !== '' && c != null).length
+    if (filled > maxFilled) { maxFilled = filled; headerRowIdx = i }
+  }
+  const headers = (raw[headerRowIdx] as unknown[]).map(h => h?.toString() ?? '')
+
+  // ── 컬럼 인덱스 탐지 ─────────────────────────────────────────────────
+  const tagIdx = findColumn(headers, TAG_ALIASES)
+  const kwIdx  = findColumn(headers, KW_ALIASES)
+  const pfIdx  = findColumn(headers, PF_ALIASES)
+  const vltIdx = findColumn(headers, VLT_ALIASES)
+  const mccIdx = findColumn(headers, MCC_ALIASES)
+
+  const warnings: string[] = []
+  const detectedColumns: ColumnMap = {
+    tag:     tagIdx >= 0 ? headers[tagIdx] : '',
+    kw:      kwIdx  >= 0 ? headers[kwIdx]  : '',
+    pf:      pfIdx  >= 0 ? headers[pfIdx]  : '',
+    voltage: vltIdx >= 0 ? headers[vltIdx] : '',
+    mcc:     mccIdx >= 0 ? headers[mccIdx] : '',
+  }
+
+  if (tagIdx < 0) warnings.push('TAG 컬럼 미탐지 — 행 번호로 대체합니다')
+  if (kwIdx  < 0) warnings.push('kW 컬럼 미탐지 — 0 kW로 처리하여 건너뜁니다')
+  if (pfIdx  < 0) warnings.push('PF 컬럼 미탐지 — 기본값 0.85 사용')
+  if (vltIdx < 0) warnings.push('Voltage 컬럼 미탐지 — 기본값 380 V 사용')
+  if (mccIdx < 0) warnings.push('MCC 컬럼 미탐지 — 전체를 MCC-1 그룹으로 처리합니다')
+
+  const kwColName = kwIdx >= 0 ? headers[kwIdx] : ''
+
+  // ── 데이터 행 파싱 ────────────────────────────────────────────────────
+  const rows: MotorRow[] = []
+  let skippedRows = 0
+
+  for (let i = headerRowIdx + 1; i < raw.length; i++) {
+    const row = raw[i] as unknown[]
+    // 빈 행 건너뜀
+    if (row.every(c => c === '' || c == null)) continue
+
+    const rawKW = kwIdx >= 0 ? parseNum(row[kwIdx], 0) : 0
+    const kw    = maybeConvertHP(rawKW, kwColName)
+
+    if (kw <= 0) { skippedRows++; continue }
+
+    const tag      = tagIdx  >= 0
+      ? (row[tagIdx]?.toString().trim() || `M-${i}`)
+      : `M-${i}`
+
+    let pf = pfIdx >= 0 ? parseNum(row[pfIdx], 0.85) : 0.85
+    if (pf > 1) pf = pf / 100   // 퍼센트로 입력된 경우 (e.g., 85 → 0.85)
+    if (pf <= 0 || pf > 1) pf = 0.85
+
+    const rawVolt  = vltIdx >= 0 ? parseNum(row[vltIdx], 380) : 380
+    const voltage_v = normalizeVoltageToV(rawVolt)
+
+    const mcc = mccIdx >= 0
+      ? (row[mccIdx]?.toString().trim() || 'MCC-1')
+      : 'MCC-1'
+
+    rows.push({ tag, kw: Math.round(kw * 10) / 10, pf, voltage_v, mcc })
+  }
+
+  // ── MCC 그룹화 ────────────────────────────────────────────────────────
+  const mccGroups = new Map<string, MotorRow[]>()
+  for (const row of rows) {
+    if (!mccGroups.has(row.mcc)) mccGroups.set(row.mcc, [])
+    mccGroups.get(row.mcc)!.push(row)
+  }
+
+  return {
+    rows, mccGroups, detectedColumns, warnings,
+    totalRows: rows.length, skippedRows,
+  }
+}
+
+// ── 메인 파서 (브라우저 File → XLSX 로딩 → 순수 파싱에 위임) ────────────────────
 export function parseMotorList(file: File): Promise<ParsedMotorList> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -109,97 +212,12 @@ export function parseMotorList(file: File): Promise<ParsedMotorList> {
           return
         }
 
-        const ws    = wb.Sheets[wb.SheetNames[0]]
-        const raw   = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+        const ws  = wb.Sheets[wb.SheetNames[0]]
+        const raw = XLSX.utils.sheet_to_json<unknown[]>(ws, {
           header: 1, defval: '', blankrows: false,
         })
 
-        if (raw.length < 2) {
-          resolve({
-            rows: [], mccGroups: new Map(),
-            detectedColumns: { tag: '', kw: '', pf: '', voltage: '', mcc: '' },
-            warnings: ['데이터 행이 없습니다. 헤더 + 데이터 행이 최소 2줄 필요합니다.'],
-            totalRows: 0, skippedRows: 0,
-          })
-          return
-        }
-
-        // ── 헤더 행 탐지 (최대 10행 내에서 가장 많은 컬럼이 채워진 행) ──────────
-        let headerRowIdx = 0
-        let maxFilled = 0
-        for (let i = 0; i < Math.min(10, raw.length); i++) {
-          const filled = (raw[i] as unknown[]).filter(c => c !== '' && c != null).length
-          if (filled > maxFilled) { maxFilled = filled; headerRowIdx = i }
-        }
-        const headers = (raw[headerRowIdx] as unknown[]).map(h => h?.toString() ?? '')
-
-        // ── 컬럼 인덱스 탐지 ─────────────────────────────────────────────────
-        const tagIdx = findColumn(headers, TAG_ALIASES)
-        const kwIdx  = findColumn(headers, KW_ALIASES)
-        const pfIdx  = findColumn(headers, PF_ALIASES)
-        const vltIdx = findColumn(headers, VLT_ALIASES)
-        const mccIdx = findColumn(headers, MCC_ALIASES)
-
-        const warnings: string[] = []
-        const detectedColumns: ColumnMap = {
-          tag:     tagIdx >= 0 ? headers[tagIdx] : '',
-          kw:      kwIdx  >= 0 ? headers[kwIdx]  : '',
-          pf:      pfIdx  >= 0 ? headers[pfIdx]  : '',
-          voltage: vltIdx >= 0 ? headers[vltIdx] : '',
-          mcc:     mccIdx >= 0 ? headers[mccIdx] : '',
-        }
-
-        if (tagIdx < 0) warnings.push('TAG 컬럼 미탐지 — 행 번호로 대체합니다')
-        if (kwIdx  < 0) warnings.push('kW 컬럼 미탐지 — 0 kW로 처리하여 건너뜁니다')
-        if (pfIdx  < 0) warnings.push('PF 컬럼 미탐지 — 기본값 0.85 사용')
-        if (vltIdx < 0) warnings.push('Voltage 컬럼 미탐지 — 기본값 380 V 사용')
-        if (mccIdx < 0) warnings.push('MCC 컬럼 미탐지 — 전체를 MCC-1 그룹으로 처리합니다')
-
-        const kwColName = kwIdx >= 0 ? headers[kwIdx] : ''
-
-        // ── 데이터 행 파싱 ────────────────────────────────────────────────────
-        const rows: MotorRow[] = []
-        let skippedRows = 0
-
-        for (let i = headerRowIdx + 1; i < raw.length; i++) {
-          const row = raw[i] as unknown[]
-          // 빈 행 건너뜀
-          if (row.every(c => c === '' || c == null)) continue
-
-          const rawKW = kwIdx >= 0 ? parseNum(row[kwIdx], 0) : 0
-          const kw    = maybeConvertHP(rawKW, kwColName)
-
-          if (kw <= 0) { skippedRows++; continue }
-
-          const tag      = tagIdx  >= 0
-            ? (row[tagIdx]?.toString().trim() || `M-${i}`)
-            : `M-${i}`
-
-          let pf = pfIdx >= 0 ? parseNum(row[pfIdx], 0.85) : 0.85
-          if (pf > 1) pf = pf / 100   // 퍼센트로 입력된 경우 (e.g., 85 → 0.85)
-          if (pf <= 0 || pf > 1) pf = 0.85
-
-          const rawVolt  = vltIdx >= 0 ? parseNum(row[vltIdx], 380) : 380
-          const voltage_v = normalizeVoltageToV(rawVolt)
-
-          const mcc = mccIdx >= 0
-            ? (row[mccIdx]?.toString().trim() || 'MCC-1')
-            : 'MCC-1'
-
-          rows.push({ tag, kw: Math.round(kw * 10) / 10, pf, voltage_v, mcc })
-        }
-
-        // ── MCC 그룹화 ────────────────────────────────────────────────────────
-        const mccGroups = new Map<string, MotorRow[]>()
-        for (const row of rows) {
-          if (!mccGroups.has(row.mcc)) mccGroups.set(row.mcc, [])
-          mccGroups.get(row.mcc)!.push(row)
-        }
-
-        resolve({
-          rows, mccGroups, detectedColumns, warnings,
-          totalRows: rows.length, skippedRows,
-        })
+        resolve(parseMotorListRows(raw))
       } catch (err) {
         reject(new Error(`파싱 실패: ${err instanceof Error ? err.message : String(err)}`))
       }
