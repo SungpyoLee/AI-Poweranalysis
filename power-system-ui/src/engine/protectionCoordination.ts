@@ -149,8 +149,10 @@ export function computeRelayResults(
     if (n.type !== 'breaker' || !n.data.equipment.in_service) return false
     return !!(n.data.equipment as Breaker).relay
   })
-  if (breakersWithRelay.length === 0) return []
-
+  // 주의: 예전엔 여기서 상간(50/51) 계전기가 하나도 없으면 바로 return []
+  // 했는데, 이 함수는 뒤에서 51N(지락) 계전기도 같은 results 배열에 처리한다.
+  // 그래서 "51N 지락 계전기만 있고 50/51은 하나도 없는" 흔한 구성(저압
+  // 계통 등)에서는 51N 결과까지 통째로 사라지는 버그가 있었다.
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
   const results: RelayResult[] = []
 
