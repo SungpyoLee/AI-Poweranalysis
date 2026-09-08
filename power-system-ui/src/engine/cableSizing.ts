@@ -45,7 +45,7 @@ function vdropLimit(vn_kv: number): number {
 /** ΔV% for 3-phase cable.
  *  ΔV% = √3 × I[A] × L[km] × (R cosφ + X sinφ) × 100 / (V_nom[kV] × 1000)
  */
-function computeVdrop(
+export function computeVdrop(
   i_a: number, l_km: number,
   r_ohm_per_km: number, x_ohm_per_km: number,
   v_kv: number,
@@ -58,7 +58,7 @@ function computeVdrop(
 }
 
 /** SC withstand [kA] for a given cross section and clearing time. */
-function scWithstand(mm2: number, k: number, t_s: number): number {
+export function scWithstand(mm2: number, k: number, t_s: number): number {
   if (t_s <= 0 || mm2 <= 0) return 0
   return (k * mm2) / (Math.sqrt(t_s) * 1000)
 }
@@ -66,12 +66,18 @@ function scWithstand(mm2: number, k: number, t_s: number): number {
 // ── IEC 60287 / IEC 60364-5-52 Derating factor calculation ──────────────────
 // Temperature correction: Ct = √((Tmax - Ta) / (Tmax - 30))
 // where Tmax = max conductor temp, Ta = ambient temp, 30°C = reference ambient
-function tempCorrectionFactor(ambient_temp_c: number, ref_temp_c: number): number {
+export function tempCorrectionFactor(ambient_temp_c: number, ref_temp_c: number): number {
   const Ta   = ambient_temp_c
   const Tmax = ref_temp_c
-  if (Tmax <= Ta) return 1.0  // avoid sqrt of negative
-  const factor = (Tmax - Ta) / (Tmax - 30)
-  return factor > 0 ? Math.sqrt(factor) : 1.0
+  const denom = Tmax - 30
+  // Ambient at/above the conductor's own rated max temperature (or a degenerate
+  // Tmax ≤ 30°C rating) means there is no safe margin left to carry any current —
+  // factor must go to 0, not 1.0. Returning 1.0 here previously meant "no
+  // derating at all," i.e. reporting full nameplate ampacity as safe in exactly
+  // the case where the cable cannot safely carry any load.
+  if (denom <= 0) return 0
+  const factor = (Tmax - Ta) / denom
+  return factor > 0 ? Math.sqrt(factor) : 0
 }
 
 // Installation method base derating (IEC 60364-5-52 Table B.52.2 representative values)
@@ -85,7 +91,7 @@ const INSTALL_METHOD_FACTOR: Record<CableInstallMethod, number> = {
 }
 
 // Combined derating factor for a cable
-function cableDeratingFactor(cable: CableType): number {
+export function cableDeratingFactor(cable: CableType): number {
   const Ta   = cable.ambient_temp_c ?? 40
   const Tmax = cable.ref_temp_c ?? 70  // PVC=70, XLPE/EPR=90
   const Ct   = tempCorrectionFactor(Ta, Tmax)
@@ -97,7 +103,7 @@ function cableDeratingFactor(cable: CableType): number {
 /** Estimate cross-section [mm²] from conductor resistance.
  *  ρ_Cu at 70°C ≈ 0.02063 Ω·mm²/m → S ≈ 20.63 / R_Ω_per_km
  */
-function estimateMM2(r_ohm_per_km: number): number {
+export function estimateMM2(r_ohm_per_km: number): number {
   if (r_ohm_per_km <= 0) return 0
   const raw = 20.63 / r_ohm_per_km
   const standards = [16, 25, 35, 50, 70, 95, 120, 150, 185, 200, 240, 300, 325, 400, 500]

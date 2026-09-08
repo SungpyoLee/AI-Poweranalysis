@@ -143,9 +143,16 @@ export function runContingencyAnalysis(
     if (node.type !== 'transformer' && node.type !== 'transformer3w' &&
         node.type !== 'breaker' && node.type !== 'generator') continue
 
+    // 차단기는 in_service가 아니라 is_closed로 "개방"을 표현해야 한다 — 연결성 판정
+    // 함수들(findConnectedBusId/findReachableNodes, utils/graphTraversal.ts)이
+    // 차단기를 지나갈지 말지는 오직 is_closed만 보고, in_service는 전혀 보지 않는다.
+    // in_service만 false로 두면 loadflow 쪽 연결성 판정에는 아무 영향이 없어서
+    // (그 차단기가 물려 있는 부하/전동기가 여전히 정상 연결된 것처럼 계산됨),
+    // "차단기" N-1 케이스가 사실상 기준 케이스와 동일하게 나오는 버그가 있었다.
+    const eqPatch = node.type === 'breaker' ? { is_closed: false } : { in_service: false }
     const modNodes = nodes.map(n =>
       n.id === node.id
-        ? { ...n, data: { ...n.data, equipment: { ...n.data.equipment, in_service: false } } }
+        ? { ...n, data: { ...n.data, equipment: { ...n.data.equipment, ...eqPatch } } }
         : n
     )
 
