@@ -106,21 +106,31 @@ def merge_context(
 ) -> tuple[str, dict]:
     """
     새 파라미터와 이전 컨텍스트 병합.
-    핵심 파라미터(전압·용량)가 새 메시지에 없으면 이전 값 유지.
+    핵심 파라미터(전압·용량)가 새 메시지에 없으면 이전 값 유지 — 단,
+    유형 자체가 바뀌었다면(예: 케이블 얘기하다 "변압기 효율은?") 그건
+    "이전 대화의 연속"이 아니라 새 주제이므로 예전 유형·파라미터로
+    답하면 안 된다. 예전엔 이 구분이 없어서, 유형이 바뀐 메시지에
+    필수값이 없으면 완전히 무관한 이전 유형·파라미터로 조용히
+    계산해버리는 문제가 있었다.
     """
     ctx       = load_context(user_id)
     prev_type = ctx.get("query_type", new_type)
     prev_params = ctx.get("params", {})
+    topic_changed = bool(ctx) and new_type != prev_type
 
-    # 새 메시지에 핵심 파라미터가 있으면 → 새 쿼리로 판단
+    # 새 메시지에 핵심 파라미터가 있거나, 유형 자체가 바뀌었으면 → 새 쿼리로 판단
     required  = REQUIRED_BY_TYPE.get(new_type, ["voltage_v"])
-    is_new_query = all(new_params.get(k) for k in required)
+    has_required = all(new_params.get(k) for k in required)
+    is_new_query = has_required or topic_changed
 
     if is_new_query:
-        # 완전히 새 계산: 이전 컨텍스트 무시
-        # install_method / phases 같은 부가 정보는 기존 것 유지
-        base = {k: v for k, v in prev_params.items()
-                if k in ("install_method", "phases", "power_factor", "efficiency")}
+        # 완전히 새 계산: 이전 컨텍스트 무시.
+        # 다만 같은 유형 안에서의 새 계산이라면 install_method / phases 같은
+        # 부가 정보는 유지한다 — 유형이 바뀌었다면 그마저도 관련 없으므로 버린다.
+        base = {} if topic_changed else {
+            k: v for k, v in prev_params.items()
+            if k in ("install_method", "phases", "power_factor", "efficiency")
+        }
         merged = {**base, **new_params}
         return new_type, merged
     else:
