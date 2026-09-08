@@ -265,9 +265,15 @@ export function computeRelayResults(
 //   - Percentage differential characteristic (dual-slope biased diff)
 //   - 2nd harmonic restraint for magnetizing inrush blocking
 //
-// Input currents from loadflow (proxy for through-fault current imbalance).
-// Full accuracy requires CT ratios and actual differential CT measurements.
-// This implementation uses load-flow unbalance as an approximation.
+// Restraint and differential currents are both derived from each side's
+// ACTUAL loadflow current (apparent power ÷ rated voltage), normalized to
+// that side's own rated current — as a real relay's CT ratio selection
+// would. Restraint therefore rises with real loading, same as a physical
+// percentage-differential relay; it is NOT a fixed value from nameplate
+// rating alone.
+// Full accuracy still requires real CT ratios and true differential CT
+// measurements (this uses steady-state load flow as an approximation, so
+// it cannot see actual internal-fault waveforms or CT saturation).
 export function computeDifferentialRelayResults(
   nodes:    Node<NodeData>[],
   edges:    Edge<EdgeData>[],
@@ -299,24 +305,37 @@ export function computeDifferentialRelayResults(
     const trEq = trNode.data.equipment as Transformer
     const rel  = br.relay_87t
 
-    // Rated currents (from transformer MVA rating)
+    // Rated currents (from transformer MVA rating) — used only to normalize
+    // each side's ACTUAL current into per-unit (as CT ratio selection does
+    // for a real relay), not as the restraint quantity itself.
     const I_rated_hv = (trEq.sn_mva * 1000) / (Math.sqrt(3) * trEq.vn_hv_kv)  // A
     const I_rated_lv = (trEq.sn_mva * 1000) / (Math.sqrt(3) * trEq.vn_lv_kv)   // A
 
-    // Differential current proxy from load flow transformer result
+    // Actual through-current on each side from the load flow (apparent power,
+    // not just real power, so a reactive-only imbalance is also seen).
     const lfTr = loadflow.transformers[trNode.id]
-    const I_diff_proxy = lfTr
-      ? Math.abs(lfTr.p_hv_mw - lfTr.p_lv_mw) * 1000 / (Math.sqrt(3) * trEq.vn_hv_kv) * 1.05
-      : 0
+    const S_hv_mva = lfTr ? Math.hypot(lfTr.p_hv_mw, lfTr.q_hv_mvar) : 0
+    const S_lv_mva = lfTr ? Math.hypot(lfTr.p_lv_mw, lfTr.q_lv_mvar) : 0
+    const I_hv_actual = (S_hv_mva * 1000) / (Math.sqrt(3) * trEq.vn_hv_kv)  // A
+    const I_lv_actual = (S_lv_mva * 1000) / (Math.sqrt(3) * trEq.vn_lv_kv)  // A
+    const I_hv_pu = I_rated_hv > 0 ? I_hv_actual / I_rated_hv : 0
+    const I_lv_pu = I_rated_lv > 0 ? I_lv_actual / I_rated_lv : 0
 
-    const diff_pct = I_rated_hv > 0 ? (I_diff_proxy / I_rated_hv) * 100 : 0
-    const restrain = (I_rated_hv + I_rated_lv) / 2  // average restraint current
+    // Restraint = average of both sides' ACTUAL through-current (pu), not the
+    // transformer's fixed nameplate rating. A real 87T relay restrains on the
+    // secondary CT currents it is actually seeing right now — restraint must
+    // rise with real loading so the relay tolerates more CT mismatch error at
+    // heavy load without misoperating, and stays sensitive at light load.
+    const I_restrain_pu = (I_hv_pu + I_lv_pu) / 2
+    const restrain = (I_hv_actual + I_lv_actual) / 2  // A, for display only
+
+    // Differential current = actual through-current mismatch between sides (pu)
+    const diff_pct = Math.abs(I_hv_pu - I_lv_pu) * 100
 
     // Dual-slope biased differential characteristic:
     // Slope 1 applies for I_restrain < breakpoint (typically 1 pu)
     // Slope 2 applies above breakpoint
     const breakpoint_pu = 1.0
-    const I_restrain_pu = restrain / I_rated_hv
     const slope = I_restrain_pu < breakpoint_pu ? rel.slope1_pct : rel.slope2_pct
     const min_diff_pct = rel.pickup_pct + (slope / 100) * (I_restrain_pu * 100)
 

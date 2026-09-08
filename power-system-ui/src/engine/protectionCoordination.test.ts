@@ -242,10 +242,7 @@ describe('computeDifferentialRelayResults — 87T', () => {
   })
 
   it('HV·LV 유효전력이 크게 어긋나면(내부 고장을 흉내낸 큰 불평형) 트립한다', () => {
-    // 주의: restrain_current_a는 실제 순시전류가 아니라 HV/LV "정격"전류의 평균으로
-    // 계산된다(구현의 알려진 한계 — 실제 87T는 CT 2차 기준 실시간 전류로 억제해야
-    // 함). HV/LV 전압을 같게 두면 그 영향이 없어져 픽업 임계값을 깔끔하게 계산할
-    // 수 있다 — 여기서는 "픽업을 넘는 불평형이면 트립한다" 그 자체만 검증한다.
+    // HV/LV 전압을 같게 두면 회전비 영향이 없어져 픽업 임계값을 손 계산하기 쉽다.
     const trNode = {
       id: 'tr', type: 'transformer', position: { x: 0, y: 0 },
       data: { equipment: { ...defaultEquipment('transformer', 'tr'), sn_mva: 10, vn_hv_kv: 10, vn_lv_kv: 10 } },
@@ -262,8 +259,41 @@ describe('computeDifferentialRelayResults — 87T', () => {
     } as any
 
     const results = computeDifferentialRelayResults(nodes, edges, loadflow)
-    expect(results[0].diff_current_pct).toBeGreaterThan(80)   // 독립 계산: ≈84%
+    expect(results[0].diff_current_pct).toBeGreaterThan(80)   // 독립 계산: ≈80.6%
     expect(results[0].trips).toBe(true)
     expect(results[0].pass).toBe(false)
+  })
+
+  it('억제전류는 변압기 정격이 아니라 실제 부하수준을 따라간다(4배 부하 → 억제전류도 약 4배)', () => {
+    // 회귀: 예전엔 restrain_current_a가 (I_rated_hv+I_rated_lv)/2로 고정돼 있어서
+    // 실제 부하가 얼마든 항상 같은 값이 나왔다(=경부하에서도 중부하와 똑같이
+    // 둔감/민감했다는 뜻). 지금은 양쪽의 "실제" 전류(부하조류 P,Q 기반)를 정격
+    // 전류로 정규화한 뒤 평균한 값이므로, 같은 비율의 불평형이라도 부하수준이
+    // 오르면 억제전류도 같이 올라가야 한다 — 실제 87T 계전기의 동작 원리대로.
+    const makeNode = (p_hv: number, p_lv: number) => {
+      const trNode = {
+        id: 'tr', type: 'transformer', position: { x: 0, y: 0 },
+        data: { equipment: { ...defaultEquipment('transformer', 'tr'), sn_mva: 10, vn_hv_kv: 22.9, vn_lv_kv: 6.6 } },
+      } as RFNode<NodeData>
+      const cbNode = breaker('cb87t', 'CB-87T', null, {
+        relay_87t: { pickup_pct: 20, slope1_pct: 25, slope2_pct: 50, harmonic_restraint: true, harmonic_pct: 15 },
+      })
+      const nodes = [trNode, cbNode]
+      const edges = [edge('e1', 'tr', 'cb87t')]
+      const loadflow = {
+        converged: true, buses: {}, lines: {}, generators: {}, motors: {},
+        transformers: { tr: { nodeId: 'tr', loading_percent: 0, p_hv_mw: p_hv, q_hv_mvar: 0, p_lv_mw: p_lv, q_lv_mvar: 0 } },
+      } as any
+      return computeDifferentialRelayResults(nodes, edges, loadflow)[0]
+    }
+
+    // 두 시나리오 모두 HV 대비 LV가 10% 적은(=같은 비율의) 불평형이지만, 절대
+    // 부하수준은 4배 차이난다.
+    const light = makeNode(2, 1.8)
+    const heavy = makeNode(8, 7.2)
+
+    // 독립 계산: I_hv_actual = p_hv*1000/(√3·22.9), I_lv_actual = p_lv*1000/(√3·6.6)
+    // light: restrain ≈ (50.43+157.5)/2 ≈ 103.96A, heavy: ≈ (201.7+629.9)/2 ≈ 415.85A
+    expect(heavy.restrain_current_a).toBeCloseTo(4 * light.restrain_current_a, -1)
   })
 })
