@@ -168,18 +168,27 @@ def run_shortcircuit(data: NetworkInput) -> ShortCircuitResult:
     return ShortCircuitResult(buses=bus_results)
 
 
+def compute_xr_ratio(rk_ohm: float, xk_ohm: float) -> float:
+    """단락점의 X/R 비율. R이 사실상 0이면(순수 리액턴스 경로) 20.0으로 근사하고,
+    극단값은 IEC 60909가 표로 제공하는 범위인 [1, 100]으로 clamp한다."""
+    xr = xk_ohm / rk_ohm if rk_ohm > 1e-9 else 20.0
+    return max(1.0, min(xr, 100.0))
+
+
+def rms_asym_ka(ikss_ka: float, xr_ratio: float, n_cycles: float) -> float:
+    """IEC 60909 기반 n사이클 시점 비대칭 RMS 전류 [kA].
+    I(t) = Ik'' * sqrt(1 + 2 * exp(-4π * n_cycles / (X/R)))
+    직류분이 시간이 지나며 감쇠하므로, n_cycles가 커질수록 Ik''에 수렴한다.
+    """
+    return ikss_ka * np.sqrt(1.0 + 2.0 * np.exp(-4.0 * np.pi * n_cycles / xr_ratio))
+
+
 def run_shortcircuit_cycles(data: NetworkInput) -> MultiCycleScResult:
     """3상 단락 다주기 해석 (1/2, 3, 5 사이클 비대칭 RMS 전류)."""
     net, id_to_idx = _build_network(data)
     idx_to_id = {v: k for k, v in id_to_idx.items()}
 
     sc.calc_sc(net, fault="3ph", case="max", ip=True, ith=False)
-
-    def rms_asym(ikss: float, xr: float, n_cycles: float) -> float:
-        """IEC 60909 기반 n사이클 시점 비대칭 RMS 전류 [kA].
-        I(t) = Ik'' * sqrt(1 + 2 * exp(-4π * n_cycles / (X/R)))
-        """
-        return ikss * np.sqrt(1.0 + 2.0 * np.exp(-4.0 * np.pi * n_cycles / xr))
 
     bus_results = []
     for idx, row in net.res_bus_sc.iterrows():
@@ -190,9 +199,7 @@ def run_shortcircuit_cycles(data: NetworkInput) -> MultiCycleScResult:
         rk   = float(row["rk_ohm"])
         xk   = float(row["xk_ohm"])
 
-        xr = xk / rk if rk > 1e-9 else 20.0
-        xr = max(1.0, min(xr, 100.0))
-
+        xr = compute_xr_ratio(rk, xk)
         sk = round(np.sqrt(3) * vn_kv * ikss, 4)
 
         bus_results.append(BusCycleScResult(
@@ -203,9 +210,9 @@ def run_shortcircuit_cycles(data: NetworkInput) -> MultiCycleScResult:
             ip_ka=round(ip, 5),
             sk_mva=sk,
             xr_ratio=round(xr, 2),
-            i_half_cycle_ka=round(rms_asym(ikss, xr, 0.5), 5),
-            i_3cycle_ka=round(rms_asym(ikss, xr, 3.0), 5),
-            i_5cycle_ka=round(rms_asym(ikss, xr, 5.0), 5),
+            i_half_cycle_ka=round(rms_asym_ka(ikss, xr, 0.5), 5),
+            i_3cycle_ka=round(rms_asym_ka(ikss, xr, 3.0), 5),
+            i_5cycle_ka=round(rms_asym_ka(ikss, xr, 5.0), 5),
         ))
 
     return MultiCycleScResult(buses=bus_results)
