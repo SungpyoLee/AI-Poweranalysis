@@ -130,6 +130,11 @@ export function findReachableNodes(
   edges:   Edge<EdgeData>[]
 ): Set<string> {
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  // 폐기(in_service:false)된 케이블은 실제 계산 엔진들(loadflow.ts 등)이
+  // 전부 걸러내고 지나가지 않는다 — 여기서도 똑같이 걸러야, 그런 케이블
+  // 하나로만 연결된 버스를 "도달 가능"이라고 잘못 판정해 고립 경고를
+  // 놓치는 일이 없다.
+  const activeEdges = edges.filter(e => e.data?.cable?.in_service !== false)
   const visited = new Set<string>()
   const stack   = [startId]
 
@@ -138,12 +143,12 @@ export function findReachableNodes(
     if (visited.has(cur)) continue
     visited.add(cur)
 
-    for (const nbrId of getNeighborIds(cur, edges)) {
+    for (const nbrId of getNeighborIds(cur, activeEdges)) {
       if (visited.has(nbrId)) continue
 
-      // 개방 차단기 경로 차단
       const nbr = nodeMap.get(nbrId)
-      if (nbr?.type === 'breaker') {
+      if (!nbr || !nbr.data.equipment.in_service) continue   // 폐기된 장비도 통과 불가
+      if (nbr.type === 'breaker') {
         const eq = nbr.data.equipment as Breaker
         if (!eq.is_closed) continue
       }
