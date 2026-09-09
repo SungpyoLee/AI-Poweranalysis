@@ -13,10 +13,10 @@ import type { NodeData, EdgeData, Bus, Breaker, RelaySettings, ShortCircuitResul
 import { defaultEquipment, defaultCable } from '../types'
 import { computeRelayResults, computeDifferentialRelayResults } from './protectionCoordination'
 
-function bus(id: string, name: string, vn_kv = 22.9): RFNode<NodeData> {
+function bus(id: string, name: string, vn_kv = 22.9, busType: Bus['busType'] = 'PQ'): RFNode<NodeData> {
   return {
     id, type: 'bus', position: { x: 0, y: 0 },
-    data: { equipment: { ...(defaultEquipment('bus', id) as Bus), name, vn_kv } },
+    data: { equipment: { ...(defaultEquipment('bus', id) as Bus), name, vn_kv, busType } },
   }
 }
 
@@ -58,7 +58,7 @@ const NI = { curve_type: 'IEC_NORMAL_INVERSE' as const, inst_enabled: false, ins
  */
 function radialChain(upRelay: Partial<RelaySettings>, downRelay: Partial<RelaySettings>) {
   const nodes = [
-    bus('main', 'MAIN'),
+    bus('main', 'MAIN', 22.9, 'Slack'),
     breaker('cbUp', 'CB-UP', { ...NI, ...upRelay }),
     bus('mid', 'MID'),
     breaker('cbDown', 'CB-DOWN', { ...NI, ...downRelay }),
@@ -138,7 +138,7 @@ describe('computeRelayResults — 방사형 보호협조', () => {
 
   it('상류에 릴레이 있는 차단기가 없으면 마진은 Infinity, pass는 true(위반 아님)로 처리한다', () => {
     const nodes = [
-      bus('main', 'MAIN'),
+      bus('main', 'MAIN', 22.9, 'Slack'),
       breaker('cbOnly', 'CB-ONLY', { ...NI, pickup_current_a: 500, time_dial: 0.3 }),
       bus('load', 'LOAD'),
     ]
@@ -165,7 +165,7 @@ describe('computeRelayResults — 방사형 보호협조', () => {
 
   it('protectedBusId를 명시하면 자동(최소 Ik") 선택 대신 그 모선을 우선한다', () => {
     const nodes = [
-      bus('main', 'MAIN'),
+      bus('main', 'MAIN', 22.9, 'Slack'),
       breaker('cb', 'CB', { ...NI, pickup_current_a: 500, time_dial: 0.3 }, { protectedBusId: 'main' }),
       bus('load', 'LOAD'),
     ]
@@ -177,13 +177,81 @@ describe('computeRelayResults — 방사형 보호협조', () => {
   })
 })
 
+describe('computeRelayResults — 변압기로 직접 연결된 차단기 (버스가 아닌 하류)', () => {
+  // 실제 예제 프로젝트(exampleNetwork.ts)에서 발견된 버그의 최소 재현:
+  // MAIN(Slack) — CB_A(계전기) — TR_A(변압기) — LV_A(버스) — CB_A2(계전기) — MOTOR_A
+  // CB_A/CB_A2 둘 다 "버스가 아닌" 장비(변압기/전동기)로 직접 이어진다 — 이 앱의
+  // 실제 배치에서 가장 흔한 패턴이며, 예전엔 이 패턴에서 getDownstreamBus가 잘못된
+  // "보호 모선"을 골라 findUpstreamBreaker가 변압기를 그냥 지나가는 노드로 취급해
+  // 반대편(진짜 하류)까지 넘어가버렸다 — CB-103의 "상류"가 실제로는 하류인
+  // CB-201로 잘못 잡히던 것과 동일한 구조.
+  function transformerBoundaryNetwork() {
+    const nodes = [
+      bus('main', 'MAIN', 22.9, 'Slack'),
+      breaker('cbA', 'CB-A', { ...NI, pickup_current_a: 100, time_dial: 0.2 }),
+      { id: 'trA', type: 'transformer', position: { x: 0, y: 0 },
+        data: { equipment: { ...defaultEquipment('transformer', 'trA'), vn_hv_kv: 22.9, vn_lv_kv: 0.38, sn_mva: 1 } },
+      } as RFNode<NodeData>,
+      bus('lvA', 'LV_A', 0.38),
+      breaker('cbA2', 'CB-A2', { ...NI, pickup_current_a: 50, time_dial: 0.1 }),
+      { id: 'motorA', type: 'motor', position: { x: 0, y: 0 },
+        data: { equipment: defaultEquipment('motor', 'motorA') },
+      } as RFNode<NodeData>,
+    ]
+    const edges = [
+      edge('e1', 'main', 'cbA'),
+      edge('e2', 'cbA', 'trA'),
+      edge('e3', 'trA', 'lvA'),
+      edge('e4', 'lvA', 'cbA2'),
+      edge('e5', 'cbA2', 'motorA'),
+    ]
+    const scResult = sc({ main: 10, lvA: 25 })
+    return { nodes, edges, scResult }
+  }
+
+  it('변압기 1차측 차단기(CB-A)는 하류가 변압기라 경계에서 막히고, 자기 쪽(MAIN) 고장전류로 평가된다', () => {
+    const { nodes, edges, scResult } = transformerBoundaryNetwork()
+    const results = computeRelayResults(scResult, nodes, edges)
+    const a = results.find(r => r.breakerId === 'cbA')!
+    expect(a.busName).toBe('MAIN')
+    expect(a.fault_current_ka).toBe(10)
+  })
+
+  it('변압기 2차측 차단기(CB-A2)는 하류가 전동기(버스 아님)라 자기 쪽(LV_A) 고장전류로 평가된다', () => {
+    const { nodes, edges, scResult } = transformerBoundaryNetwork()
+    const results = computeRelayResults(scResult, nodes, edges)
+    const a2 = results.find(r => r.breakerId === 'cbA2')!
+    expect(a2.busName).toBe('LV_A')
+    expect(a2.fault_current_ka).toBe(25)
+  })
+
+  it('회귀: CB-A2(LV측)는 변압기 건너편의 CB-A(MV측)를 상류로 착각하지 않는다', () => {
+    // 예전 버그라면 findUpstreamBreaker가 변압기를 그냥 통과해 CB-A를 "상류"로
+    // 찾아내고, CB-A2의 25kA(LV 기준)를 CB-A의 100A 픽업(MV 기준)에 그대로
+    // 대입해 변압비를 무시한 채 마진을 계산했을 것이다.
+    const { nodes, edges, scResult } = transformerBoundaryNetwork()
+    const results = computeRelayResults(scResult, nodes, edges)
+    const a2 = results.find(r => r.breakerId === 'cbA2')!
+    expect(a2.coordination_margin_s).toBe(Infinity)
+    expect(a2.pass).toBe(true)
+  })
+
+  it('회귀(반대 방향): CB-A(MV측)도 변압기 건너편의 CB-A2(LV측)를 상류/하류로 착각하지 않는다', () => {
+    const { nodes, edges, scResult } = transformerBoundaryNetwork()
+    const results = computeRelayResults(scResult, nodes, edges)
+    const a = results.find(r => r.breakerId === 'cbA')!
+    expect(a.coordination_margin_s).toBe(Infinity)
+    expect(a.pass).toBe(true)
+  })
+})
+
 describe('computeRelayResults — 51N 지락 계전기', () => {
   it('고체 접지 계통은 Ik"의 0.87배를 지락고장전류로 근사한다', () => {
     const base = breaker('cb51n', 'CB-51N', null, {
       grounding: 'SOLID',
       relay_51n: { pickup_current_a: 100, time_dial: 0.2, curve_type: 'IEC_NORMAL_INVERSE', inst_enabled: false, inst_pickup_a: 999_999 },
     })
-    const nodes = [bus('main', 'MAIN'), base, bus('load', 'LOAD')]
+    const nodes = [bus('main', 'MAIN', 22.9, 'Slack'), base, bus('load', 'LOAD')]
     const edges = [edge('e1', 'main', 'cb51n'), edge('e2', 'cb51n', 'load')]
     const results = computeRelayResults(sc({ main: 10, load: 5 }), nodes, edges)
     const r = results.find(r => r.breakerId === 'cb51n_51N')!
@@ -195,7 +263,7 @@ describe('computeRelayResults — 51N 지락 계전기', () => {
       grounding: 'ISOLATED',
       relay_51n: { pickup_current_a: 100, time_dial: 0.2, curve_type: 'IEC_NORMAL_INVERSE', inst_enabled: false, inst_pickup_a: 999_999 },
     })
-    const nodes = [bus('main', 'MAIN'), base, bus('load', 'LOAD')]
+    const nodes = [bus('main', 'MAIN', 22.9, 'Slack'), base, bus('load', 'LOAD')]
     const edges = [edge('e1', 'main', 'cb51n'), edge('e2', 'cb51n', 'load')]
     const results = computeRelayResults(sc({ main: 10, load: 5 }), nodes, edges)
     expect(results.find(r => r.breakerId === 'cb51n_51N')).toBeUndefined()
@@ -211,7 +279,7 @@ describe('computeRelayResults — 51N 지락 계전기', () => {
         inst_enabled: false, inst_pickup_a: 999_999,
       },
     })
-    const nodes = [bus('main', 'MAIN'), cbNode, bus('load', 'LOAD')]
+    const nodes = [bus('main', 'MAIN', 22.9, 'Slack'), cbNode, bus('load', 'LOAD')]
     const edges = [edge('e1', 'main', 'cb51n-only'), edge('e2', 'cb51n-only', 'load')]
 
     const results = computeRelayResults(sc({ main: 10, load: 5 }), nodes, edges)
