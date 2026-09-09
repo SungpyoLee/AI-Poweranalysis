@@ -21,7 +21,7 @@ import type {
   ArcFlashResult, ArcFlashResults, ArcFlashRiskLevel,
   ArcFlashEnclosureType,
 } from '../types'
-import { getNeighborIds } from '../utils/graphTraversal'
+import { getNeighborIds, computeDistFromSource } from '../utils/graphTraversal'
 
 const MIN_CLEARING_S = 0.05   // mechanical breaker floor
 
@@ -162,6 +162,7 @@ export function computeArcFlash(
   if (!sc) return { items, method: 'IEEE_1584_2018_enhanced', disclaimer: DISCLAIMER }
 
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const distFromSource = computeDistFromSource(nodes, edges)
 
   // Minimum relay operating time per breaker
   const relayTimeMap = new Map<string, number>()
@@ -184,12 +185,24 @@ export function computeArcFlash(
     // Use bus-specified working distance, then category default, then 455 mm fallback
     const d_mm   = busEq.working_distance_mm ?? DEFAULT_DISTANCE_MM[cat] ?? 455
 
-    // Find minimum clearing time from directly-connected closed breakers
+    // Find minimum clearing time from closed breakers that are actually
+    // upstream of this bus (structurally closer to the source — see
+    // computeDistFromSource). A downstream feeder breaker (e.g. protecting one
+    // motor off this bus) does not carry current for a fault ON this bus and
+    // cannot clear it, no matter how fast its own relay trips; only a breaker
+    // sitting between the source and this bus can. Using ANY adjacent
+    // breaker's time here previously let a downstream feeder's instantaneous
+    // trip (evaluated against ITS OWN local bus for coordination purposes —
+    // legitimate there) stand in for "how fast a fault on this bus is
+    // cleared," which could badly underestimate incident energy.
+    const myDist = distFromSource.get(busNode.id)
     let clearingTime = 0.3   // default 300 ms (time-overcurrent)
     let minTime = Infinity
     for (const nbrId of getNeighborIds(busNode.id, edges)) {
       const nbr = nodeMap.get(nbrId)
       if (nbr?.type !== 'breaker') continue
+      const nbrDist = distFromSource.get(nbrId)
+      if (myDist === undefined || nbrDist === undefined || nbrDist >= myDist) continue  // 하류 차단기 제외
       const br = nbr.data.equipment as Breaker
       if (!br.is_closed) continue
       // Check both phase relay and 51N
