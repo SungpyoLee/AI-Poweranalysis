@@ -573,7 +573,14 @@ def calc_generator(
     selected = next((s for s in STD_GEN_KVA if s >= gen_min), STD_GEN_KVA[-1])
     gen_kw   = selected * 0.8  # pf=0.8 기준 출력 kW
 
-    vd_act = start_kva / (start_kva + selected) * 100
+    # gen_min을 구한 것과 같은 근사식(S_gen ≈ S_start·Xd''/ΔV, 즉 ΔV ≈ S_start·Xd''/S_gen)
+    # 으로 되짚어 검증해야 한다. 예전엔 Xd''(xd_pp) 항이 통째로 빠진
+    # vd_act=S_start/(S_start+S_gen)을 썼는데, 이러면 위에서 gen_min 딱 그대로
+    # 선정한 경우조차 ΔV가 25%가 아니라 50%로 나와 항상 자기모순적으로
+    # "초과"라고 오판했다 — 실제로는 gen_min으로 선정한 시점에 이미 25%
+    # 이하를 만족하도록 설계된 것이므로, 표준 규격 반올림분의 여유만큼만
+    # 25%보다 살짝 낮게 나오는 게 정상이다.
+    vd_act = start_kva * xd_pp / selected * 100
 
     return GeneratorResult(
         rated_kva    = rated_kva,

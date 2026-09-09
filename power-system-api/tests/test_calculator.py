@@ -67,8 +67,19 @@ def test_generator_500kw_dol():
     assert r.start_kva == pytest.approx(3754.69, abs=0.1)
     assert r.selected_kva == 4000
     assert r.selected_kw == pytest.approx(3200.0, abs=0.01)
-    assert r.vdrop_pct == pytest.approx(48.42, abs=0.05)
-    assert r.ok is False   # DOL 직입 기동은 25% 한도를 초과하는 것이 정상 — Y-Δ/VFD 검토 필요
+    # 독립 계산: ΔV(%) = S_start·Xd''/S_selected×100 = 3754.69×0.25/4000×100 ≈ 23.47%
+    # (gen_min을 구할 때 쓴 것과 같은 근사식으로 되짚은 값 — selected가 gen_min
+    # 이상으로 선정됐으니 25%를 넘지 않는 게 정상이다.)
+    assert r.vdrop_pct == pytest.approx(23.47, abs=0.05)
+    assert r.ok is True   # gen_min으로 이미 25% 이하를 만족하도록 선정했으므로 정상
+
+    # 회귀: 예전엔 vd_act 공식에서 Xd''(xd_pp) 항이 통째로 빠져 있었다
+    # (vd_act=S_start/(S_start+S_gen)) — gen_min 산정식과 자기모순이었다.
+    # gen_min을 딱 그대로(반올림 없이) 선정한 경계 케이스에서는 정의상
+    # ΔV가 정확히 25%(vd_allow)가 나와야 한다.
+    xd_pp, vd_allow = 0.25, 0.25
+    assert r.gen_min_kva == pytest.approx(r.start_kva * xd_pp / vd_allow, abs=0.05)
+    assert (r.start_kva * xd_pp / r.gen_min_kva * 100) == pytest.approx(25.0, abs=1e-6)
 
 
 def test_generator_100kw_soft_starter():
