@@ -32,7 +32,7 @@ export interface Bus extends BaseEquipment {
   xr_ratio?:            number                 // Grid X/R ratio, default 10
   x0r0_ratio?:          number                 // Grid X0/R0 for zero-seq, default = xr_ratio
   // Arc flash (IEEE 1584-2018)
-  working_distance_mm?: number                 // default 455 mm
+  working_distance_mm?: number                 // 미지정 시 enclosure_type별 기본값(arcFlash.ts DEFAULT_DISTANCE_MM) 사용
   enclosure_type?:      ArcFlashEnclosureType  // equipment enclosure category
   // 해석 결과(vm_pu, va_degree)는 analysisStore.loadflow.buses[id]에서 관리
 }
@@ -378,7 +378,12 @@ export function defaultEquipment(type: EquipmentType, nodeId: string): Equipment
       return { ...base, equipmentType: 'bus',
         name: `Bus-${seq('bus')}`, vn_kv: 22.9, busType: 'PQ',
         sc_mva: 5000, xr_ratio: 10, x0r0_ratio: 10,
-        working_distance_mm: 455, enclosure_type: 'MV_SWITCHGEAR' }
+        // IEEE 1584-2018 Table 3: MV_SWITCHGEAR 기본 작업거리는 910mm(36in)다 —
+        // arcFlash.ts의 DEFAULT_DISTANCE_MM와 반드시 일치해야 한다. 예전엔 여기가
+        // 455mm(LV/MCC용 거리)로 박혀 있어서, 사용자가 팔레트에서 Bus를 새로 만들
+        // 때마다(기본 enclosure_type=MV_SWITCHGEAR) 아크플래시 계산이 실제보다
+        // 가까운 거리를 가정해 입사에너지를 과대평가했다.
+        working_distance_mm: 910, enclosure_type: 'MV_SWITCHGEAR' }
     case 'transformer':
       return { ...base, equipmentType: 'transformer',
         name: `TR-${seq('tr')}`,

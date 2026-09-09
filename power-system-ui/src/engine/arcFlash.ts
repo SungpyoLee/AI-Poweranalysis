@@ -55,7 +55,7 @@ const ARC_CONSTS: Record<EquipmentCategory, ArcConstants> = {
 }
 
 // Default working distance per category (IEEE 1584-2018 Table 3)
-const DEFAULT_DISTANCE_MM: Record<EquipmentCategory, number> = {
+export const DEFAULT_DISTANCE_MM: Record<EquipmentCategory, number> = {
   OPEN_AIR:     910,  // overhead — 36 in
   LV_SWITCHGEAR: 455, // low voltage panel — 18 in
   MCC:           455, // MCC — 18 in
