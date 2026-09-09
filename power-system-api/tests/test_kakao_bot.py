@@ -284,6 +284,21 @@ def test_webhook_health_reports_gemini_key_status():
     assert body["gemini_key_set"] is False   # 이 테스트 환경엔 키가 없음(fixture로 보장)
 
 
+def test_webhook_health_never_leaks_gemini_key_value(monkeypatch):
+    """회귀: /kakao/health는 인증 없이 누구나 호출 가능한 공개 엔드포인트다 —
+    예전엔 gemini_key_preview로 실제 키의 앞 6글자를 그대로 돌려줘서, 키가
+    설정됐는지 여부를 넘어 진짜 비밀값 일부가 새고 있었다."""
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-super-secret-value-12345")
+
+    r = client.get("/kakao/health")
+    body = r.json()
+
+    assert body["gemini_key_set"] is True
+    assert "gemini_key_preview" not in body
+    assert "sk-super-secret-value-12345" not in r.text
+    assert "sk-supe" not in r.text   # 앞 6글자조차 응답에 없어야 함
+
+
 @pytest.mark.parametrize("keyword", RECALC_KEYWORDS)
 def test_all_recalc_keywords_trigger_recalc_path(keyword):
     user = f"recalc-kw-{hash(keyword)}"

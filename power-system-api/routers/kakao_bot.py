@@ -364,11 +364,14 @@ async def serve_image(uid: str):
 @router.get("/health")
 def health():
     import os
+    # 인증 없이 누구나 호출 가능한 공개 엔드포인트이므로, 실제 키 값의 일부라도
+    # 노출하면 안 된다 — 예전엔 gemini_key_preview로 키 앞 6글자를 그대로
+    # 돌려줘서, 키가 설정돼 있다는 사실 확인 용도를 넘어 실제 비밀값 일부가
+    # 새고 있었다. 설정 여부(불리언)만 알려준다.
     key = os.getenv("GEMINI_API_KEY", "")
     return {
         "status": "ok",
         "service": "kakao-bot",
         "users_in_memory": len(user_context),
         "gemini_key_set": bool(key),
-        "gemini_key_preview": key[:6] + "..." if len(key) > 6 else "(empty)",
     }
