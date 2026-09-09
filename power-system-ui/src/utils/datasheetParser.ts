@@ -376,7 +376,12 @@ function parseBreaker(text: string): ParseResult {
       /\b([\d.,]+)\s*kV\b/i,
     ]),
 
-    field('rated_kA', '정격단락전류', 'kA', t, [
+    // rated_kA는 PropertyPanel.tsx/LibraryModal.tsx에서 "Rated Current"(정격
+    // 연속전류 In, MV 차단기는 보통 1.25~4kA 범위)로 쓰인다 — "단락전류"가
+    // 아니다. 예전엔 이 라벨이 '정격단락전류'라, 같은 검토 테이블에 실제
+    // 단락 관련 값인 interrupt_kA("차단용량 Icu")와 나란히 놓이면 사용자가
+    // 이 값도 단락 관련 정격인 것처럼 착각할 수 있었다.
+    field('rated_kA', '정격전류 In', 'kA', t, [
       /[Ii](?:_?n|rated|nom)?\s*[=:]\s*([\d.,]+)\s*[Aa]\b/i,
       /(?:rated|nominal)\s*current\s*[=:]\s*([\d.,]+)\s*[Aa]\b/i,
       /\b([\d.,]+)\s*[Aa]\b/i,
