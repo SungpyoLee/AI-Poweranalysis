@@ -7,10 +7,13 @@
  * 있어서, 두 계산이 같은 입력에서 일치하는지도 함께 확인한다.
  */
 import { describe, it, expect } from 'vitest'
+import type { Node as RFNode, Edge as RFEdge } from 'reactflow'
+import type { NodeData, EdgeData, Bus, Motor } from '../types'
 import {
   tempCorrectionFactor, cableDeratingFactor, computeVdrop, scWithstand, estimateMM2,
+  computeCableSizing,
 } from './cableSizing'
-import { defaultCable } from '../types'
+import { defaultCable, defaultEquipment } from '../types'
 
 describe('tempCorrectionFactor', () => {
   it('정상 범위(주위온도 < 케이블 정격온도)에서는 표준식대로 계산한다', () => {
@@ -78,6 +81,46 @@ describe('scWithstand', () => {
   it('시간이나 단면적이 0 이하이면 0을 반환한다', () => {
     expect(scWithstand(95, 143, 0)).toBe(0)
     expect(scWithstand(0, 143, 0.5)).toBe(0)
+  })
+})
+
+describe('computeCableSizing — 조류계산 없을 때의 부하 추정 폴백', () => {
+  function bus(id: string, name: string, vn_kv: number): RFNode<NodeData> {
+    return { id, type: 'bus', position: { x: 0, y: 0 }, data: { equipment: { ...(defaultEquipment('bus', id) as Bus), name, vn_kv } } }
+  }
+  function edge(id: string, source: string, target: string): RFEdge<EdgeData> {
+    return { id, source, target, type: 'cable', data: { cable: defaultCable(id) } }
+  }
+  function network(withMotor: boolean) {
+    const nodes: RFNode<NodeData>[] = [bus('b1', 'B1', 0.4), bus('b2', 'B2', 0.4)]
+    const edges: RFEdge<EdgeData>[] = [edge('eSized', 'b1', 'b2')]
+    if (withMotor) {
+      nodes.push({ id: 'm1', type: 'motor', position: { x: 0, y: 0 },
+        data: { equipment: { ...(defaultEquipment('motor', 'm1') as Motor), vn_kv: 0.4, rated_kw: 100 } } } as RFNode<NodeData>)
+      edges.push(edge('eMotor', 'b2', 'm1'))
+    }
+    return { nodes, edges }
+  }
+
+  it('회귀: 조류계산 결과가 없어도 하류에 실제로 매달린 전동기를 찾아 그 부하로 케이블을 산정한다', () => {
+    // 예전 버그: resolveTobus(전동기ID, ...)를 직접 호출했는데, 이 함수는 시작
+    // 노드가 버스/차단기가 아니면(전동기는 둘 다 아님) 이웃을 보지도 않고
+    // 바로 null을 반환했다. 그래서 "조류계산 전에 부하를 추정"하는 폴백
+    // 로직이 하류에 뭐가 달려 있든 항상 못 찾고, 매번 "정격전류의 50%"라는
+    // 근거 없는 기본값만 썼다.
+    const { nodes: nodesNoMotor, edges: edgesNoMotor } = network(false)
+    const { nodes: nodesWithMotor, edges: edgesWithMotor } = network(true)
+
+    const withoutMotor = computeCableSizing(nodesNoMotor, edgesNoMotor, null, null)
+    const withMotor    = computeCableSizing(nodesWithMotor, edgesWithMotor, null, null)
+
+    // 전동기가 있든 없든 항상 똑같은 "50% 기본값"만 나온다면 버그가 되살아난 것.
+    expect(withMotor.cables['eSized'].loadCurrentA).not.toBeCloseTo(withoutMotor.cables['eSized'].loadCurrentA, 1)
+
+    // 독립 계산: p=100/0.92=108.7kW, I=108.7/(√3·0.4·0.85)≈184.57A
+    // (예전엔 부수적인 버그로 formula에 불필요한 /1000이 하나 더 있어서
+    // 0.1846A라는, 100kW 전동기라기엔 터무니없는 값이 나왔었다.)
+    expect(withMotor.cables['eSized'].loadCurrentA).toBeCloseTo(184.6, 0)
   })
 })
 
