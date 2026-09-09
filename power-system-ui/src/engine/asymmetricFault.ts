@@ -73,12 +73,14 @@ function buildY1(
     const vkr = eq.vkr_percent / 100; const vk = eq.vk_percent / 100
     const Xk  = Math.sqrt(Math.max(vk * vk - vkr * vkr, 0))
     const s   = S_BASE / eq.sn_mva
+    // ybus.ts/shortcircuit.ts와 동일한 근거로 a로 "나눈다" (예전엔 곱해서
+    // tap 방향이 실제(pandapower 실측 확인)와 반대였다).
     const a   = 1 + (eq.tap_pos - eq.tap_neutral) * (eq.tap_step_percent / 100)
     const Ys  = C.recip({ re: vkr * s, im: Xk * s })
-    stamp(hi, hi, { re: Ys.re * a * a, im: Ys.im * a * a })
+    stamp(hi, hi, { re: Ys.re / (a * a), im: Ys.im / (a * a) })
     stamp(li, li, Ys)
-    stamp(hi, li, { re: -Ys.re * a, im: -Ys.im * a })
-    stamp(li, hi, { re: -Ys.re * a, im: -Ys.im * a })
+    stamp(hi, li, { re: -Ys.re / a, im: -Ys.im / a })
+    stamp(li, hi, { re: -Ys.re / a, im: -Ys.im / a })
   }
 
   // 3권선 변압기 — Kron 축약으로 가상 성형점 제거 (3×3 버스 등가)

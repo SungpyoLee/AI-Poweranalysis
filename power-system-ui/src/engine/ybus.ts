@@ -72,13 +72,20 @@ export function buildYBus(
     const b_m      = Math.sqrt(Math.max(i0_pu ** 2 - g_fe ** 2, 0))
     const Y_sh_h   = { re: g_fe / 2, im: -b_m / 2 }
 
+    // 탭 위치 오프셋 a: HV측 OLTC 가정. 표준 오프노미널 변압기 π-모델(예: MATPOWER,
+    // pandapower)에서 tap측(HV) 자기 어드미턴스는 a²로 "나누고", 상호항은 a로
+    // "나눈다" — 반대편(LV) 쪽만 그대로(unscaled) 둔다. 이상변압기(비율 a:1) +
+    // 직렬 어드미턴스 Ys 회로를 직접 유도하면: I_hv = (Ys/a²)V_hv − (Ys/a)V_lv,
+    // I_lv = −(Ys/a)V_hv + Ys·V_lv 가 나온다. 예전엔 여기서 곱셈(×a², ×a)을 써서
+    // 탭 방향이 정반대였다 — pandapower로 직접 조류계산해 실측 확인함(tap_pos를
+    // 올렸더니 LV 전압이 낮아짐, 이 리포의 반대 방향 가정과는 모순).
     const a  = 1 + (eq.tap_pos - eq.tap_neutral) * (eq.tap_step_percent / 100)
     const a2 = a * a
 
-    stamp(hi, hi, C.add({ re: Y_series.re * a2, im: Y_series.im * a2 }, Y_sh_h))
+    stamp(hi, hi, C.add({ re: Y_series.re / a2, im: Y_series.im / a2 }, Y_sh_h))
     stamp(li, li, C.add(Y_series, Y_sh_h))
-    stamp(hi, li, { re: -Y_series.re * a, im: -Y_series.im * a })
-    stamp(li, hi, { re: -Y_series.re * a, im: -Y_series.im * a })
+    stamp(hi, li, { re: -Y_series.re / a, im: -Y_series.im / a })
+    stamp(li, hi, { re: -Y_series.re / a, im: -Y_series.im / a })
   }
 
   // ── P3-2: 3-winding Transformers (star equivalent — virtual neutral node) ─────
