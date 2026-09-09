@@ -51,6 +51,19 @@ def _build_network(data: NetworkInput) -> tuple[pp.pandapowerNet, dict[int, int]
             min_q_mvar=gen.min_q_mvar,
         )
 
+    for motor in data.motors:
+        pp.create_motor(
+            net,
+            bus=id_to_idx[motor.bus_id],
+            pn_mech_mw=motor.pn_mech_mw,
+            cos_phi=motor.cos_phi,
+            name=motor.name,
+            efficiency_percent=motor.efficiency_percent,
+            scaling=motor.scaling,
+            vn_kv=motor.vn_kv if motor.vn_kv is not None else np.nan,
+            lrc_pu=motor.lrc_pu if motor.lrc_pu is not None else np.nan,
+        )
+
     for line in data.lines:
         pp.create_line_from_parameters(
             net,
@@ -65,6 +78,23 @@ def _build_network(data: NetworkInput) -> tuple[pp.pandapowerNet, dict[int, int]
         )
 
     for trafo in data.transformers:
+        # 탭 위치는 HV측 OLTC로 가정한다 (프론트엔드 로컬 엔진 ybus.ts와 동일한 관례).
+        # tap_pos가 안 오면(None) pandapower 기본값(탭 미적용)을 그대로 쓴다.
+        tap_kwargs = {}
+        if trafo.tap_pos is not None:
+            tap_kwargs = dict(
+                tap_side="hv",
+                tap_pos=trafo.tap_pos,
+                tap_neutral=trafo.tap_neutral,
+                tap_min=trafo.tap_min,
+                tap_max=trafo.tap_max,
+                tap_step_percent=trafo.tap_step_percent,
+                # pandapower 3.0+는 tap_changer_type을 명시하지 않으면(NaN)
+                # tap_pos가 실려 있어도 실제 조류계산에 반영하지 않는다 —
+                # 이 필드 없이 배포했다면 tap 필드를 다 보내고도 항상 중립
+                # 탭으로만 계산되는 조용한 회귀였을 것이다.
+                tap_changer_type="Ratio",
+            )
         pp.create_transformer_from_parameters(
             net,
             hv_bus=id_to_idx[trafo.hv_bus_id],
@@ -77,6 +107,7 @@ def _build_network(data: NetworkInput) -> tuple[pp.pandapowerNet, dict[int, int]
             vkr_percent=trafo.vkr_percent,
             pfe_kw=trafo.pfe_kw,
             i0_percent=trafo.i0_percent,
+            **tap_kwargs,
         )
 
     return net, id_to_idx

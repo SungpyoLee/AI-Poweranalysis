@@ -16,7 +16,7 @@ import math
 import pandapower as pp
 import pytest
 
-from models.network import NetworkInput, Bus, ExternalGrid, Load, Line
+from models.network import NetworkInput, Bus, ExternalGrid, Load, Line, Motor, Transformer
 from services.solver import (
     run_loadflow,
     run_shortcircuit,
@@ -180,3 +180,98 @@ def test_shortcircuit_cycles_asymmetry_decreases_toward_ikss(radial_two_bus):
 
     assert source.ip_ka > source.ikss_ka                      # 첨두전류 > 대칭 초기전류
     assert source.i_half_cycle_ka > source.i_3cycle_ka > source.i_5cycle_ka >= source.ikss_ka
+
+
+# ── 프론트엔드-백엔드 계약 회귀 테스트 ─────────────────────────────────────────
+# power-system-ui/src/utils/buildNetworkPayload.ts가 실제로 만들어 보내는
+# JSON과 정확히 같은 모양의 딕셔너리. 예전엔 이 함수가 bus_id 대신 bus,
+# p_mw 대신 p_kw, from_bus_id/to_bus_id 대신 from_bus/to_bus,
+# hv_bus_id/lv_bus_id 대신 hv_bus/lv_bus를 보냈고 buses[].id도 아예 없었다
+# — NetworkInput의 필수 필드라 FastAPI가 요청을 받자마자 422로 거부했다.
+# 즉 Toolbar의 "API(서버)" 조류/단락계산 백엔드는 실제로는 한 번도
+# 성공한 적이 없었다. 이 테스트는 그 계약이 실제로 맞물리는지 검증한다.
+def test_network_input_accepts_actual_frontend_payload_shape():
+    frontend_payload = {
+        "name": "PowerFlow Network",
+        "f_hz": 60,
+        "buses": [
+            {"id": 0, "name": "SRC", "vn_kv": 22.9, "type": "b", "in_service": True},
+            {"id": 1, "name": "LOAD", "vn_kv": 22.9, "type": "b", "in_service": True},
+        ],
+        "external_grids": [
+            {"bus_id": 0, "name": "Grid@SRC", "vm_pu": 1.0, "va_degree": 0},
+        ],
+        "generators": [],
+        "motors": [
+            {"name": "M1", "bus_id": 1, "pn_mech_mw": 0.5, "cos_phi": 0.85,
+             "efficiency_percent": 92, "vn_kv": 0.4, "lrc_pu": 6.5, "scaling": 1.0},
+        ],
+        "loads": [
+            {"name": "L1", "bus_id": 1, "p_mw": 0.12, "q_mvar": 0.06, "vn_kv": 22.9,
+             "const_z_percent": 0, "const_i_percent": 0, "const_p_percent": 100,
+             "scaling": 1.0, "in_service": True},
+        ],
+        "transformers": [],
+        "lines": [
+            {"name": "C1", "from_bus_id": 0, "to_bus_id": 1, "std_type": None, "length_km": 0.5,
+             "r_ohm_per_km": 0.164, "x_ohm_per_km": 0.1, "c_nf_per_km": 0,
+             "r0_ohm_per_km": 0.164, "x0_ohm_per_km": 0.1, "c0_nf_per_km": 0,
+             "max_i_ka": 0.4, "parallel": 1, "in_service": True},
+        ],
+    }
+
+    net_input = NetworkInput(**frontend_payload)   # 예전엔 여기서 ValidationError 발생
+    result = run_loadflow(net_input)
+    assert result.converged is True
+
+    by_id = {b.bus_id: b for b in result.buses}
+    # 모터(0.5MW 기계출력/92%효율 ≈ 0.543MW 전기입력) + 부하(0.12MW) 만큼
+    # LOAD 버스가 소비해야 한다 — motors가 완전히 무시되던 예전엔 부하만큼만
+    # (약 0.12MW) 잡혔다.
+    assert by_id[1].p_mw > 0.5
+
+
+def test_motor_electrical_draw_reflects_mechanical_power_over_efficiency():
+    """모터만 매달린 버스 — 회귀: 예전엔 NetworkInput/solver 어느 쪽도 motors를
+    다루지 않아 이 버스의 부하는 완전히 0으로 계산됐다."""
+    net_input = NetworkInput(
+        buses=[
+            Bus(id=1, name="Grid", vn_kv=0.4),
+            Bus(id=2, name="MotorBus", vn_kv=0.4),
+        ],
+        external_grids=[ExternalGrid(bus_id=1, s_sc_max_mva=1000, s_sc_min_mva=800)],
+        lines=[Line(from_bus_id=1, to_bus_id=2, name="C1", length_km=0.05,
+                     r_ohm_per_km=0.164, x_ohm_per_km=0.1, max_i_ka=1.0)],
+        motors=[Motor(bus_id=2, name="M1", pn_mech_mw=0.1, cos_phi=0.85,
+                       efficiency_percent=90, vn_kv=0.4)],
+    )
+    result = run_loadflow(net_input)
+    assert result.converged is True
+
+    motor_bus = next(b for b in result.buses if b.bus_id == 2)
+    # 전기입력 ≈ 0.1/0.90 ≈ 0.1111MW — 손실 있는 케이블 건너므로 약간의 오차 허용
+    assert motor_bus.p_mw == pytest.approx(0.1 / 0.90, rel=0.05)
+
+
+def test_transformer_tap_position_shifts_lv_side_voltage():
+    """HV측 OLTC에서 탭을 올리면(tap_pos ↑) HV측 권선 턴수가 늘어난 것으로
+    취급되어 같은 HV 전압 대비 LV측 전압은 오히려 낮아져야 한다 — 프론트엔드
+    ybus.ts가 세우는 것과 동일한 물리적 모델(회귀 시점에 pandapower로 직접
+    조류계산해 이 방향을 실측 확인했다). 회귀: 예전엔 백엔드 Transformer
+    모델에 탭 필드가 아예 없어 항상 중립 탭으로만 계산됐다."""
+    def lv_voltage(tap_pos: float) -> float:
+        net_input = NetworkInput(
+            buses=[Bus(id=1, name="HV", vn_kv=22.9), Bus(id=2, name="LV", vn_kv=0.4)],
+            external_grids=[ExternalGrid(bus_id=1, s_sc_max_mva=1000, s_sc_min_mva=800)],
+            transformers=[Transformer(
+                hv_bus_id=1, lv_bus_id=2, name="TR1", sn_mva=1.0,
+                vn_hv_kv=22.9, vn_lv_kv=0.4, vk_percent=6, vkr_percent=1,
+                tap_pos=tap_pos, tap_neutral=0, tap_min=-2, tap_max=2, tap_step_percent=2.5,
+            )],
+            loads=[Load(bus_id=2, name="L1", p_mw=0.1, q_mvar=0.03)],
+        )
+        r = run_loadflow(net_input)
+        assert r.converged is True
+        return next(b for b in r.buses if b.bus_id == 2).vm_pu
+
+    assert lv_voltage(tap_pos=-2) > lv_voltage(tap_pos=0) > lv_voltage(tap_pos=2)
