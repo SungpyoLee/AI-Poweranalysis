@@ -112,7 +112,12 @@ export function estimateMM2(r_ohm_per_km: number): number {
   )
 }
 
-/** Resolve a nodeId through closed breakers to the nearest Bus. */
+/** Resolve a nodeId through closed breakers to the nearest Bus.
+ *  Also usable starting directly on a piece of equipment (load/motor): at
+ *  depth 0 only, look at its own neighbors even though it's neither a bus
+ *  nor a breaker — otherwise calling this on a load/motor id always
+ *  returned null immediately, which silently meant the "no loadflow data
+ *  yet" fallback below could never find any attached load/motor at all. */
 function resolveTobus(
   nodeId: string,
   nodeMap: Map<string, Node<NodeData>>,
@@ -126,12 +131,14 @@ function resolveTobus(
   if (node.type === 'breaker') {
     const eq = node.data.equipment as Breaker
     if (!eq.in_service || !eq.is_closed) return null
-    for (const edge of edgesByNode.get(nodeId) ?? []) {
-      const otherId = edge.source === nodeId ? edge.target : edge.source
-      if (otherId === nodeId) continue
-      const result = resolveTobus(otherId, nodeMap, edgesByNode, depth + 1)
-      if (result) return result
-    }
+  } else if (depth > 0) {
+    return null   // 장비를 거쳐 다른 장비로 건너가지는 않는다
+  }
+  for (const edge of edgesByNode.get(nodeId) ?? []) {
+    const otherId = edge.source === nodeId ? edge.target : edge.source
+    if (otherId === nodeId) continue
+    const result = resolveTobus(otherId, nodeMap, edgesByNode, depth + 1)
+    if (result) return result
   }
   return null
 }
@@ -200,7 +207,10 @@ export function computeCableSizing(
             : p * Math.tan(Math.acos(Math.max(eq.pf ?? DEFAULT_COS_PHI, 0.1)))
           pSum_kw   += p
           qSum_kvar += q
-          const s_kva = Math.sqrt(p * p + q * q) / 1000
+          // p,q는 kW/kvar, vn_kv는 kV — kW/kV의 단위가 이미 A와 같아서
+          // (√3·A[kW→W]/A[kV→V]의 1000이 서로 상쇄) 추가로 1000을 나누면
+          // 안 된다. 예전엔 나눠서 결과가 항상 1000배 작게 나왔다.
+          const s_kva = Math.sqrt(p * p + q * q)
           i_load_a   += s_kva / (Math.sqrt(3) * vn_kv)
         } else if (n.type === 'motor') {
           const eq = n.data.equipment as Motor
@@ -211,7 +221,8 @@ export function computeCableSizing(
           const q   = p * Math.tan(Math.acos(pf))
           pSum_kw   += p
           qSum_kvar += q
-          i_load_a  += (p / 1000) / (Math.sqrt(3) * vn_kv * pf)
+          // 위 부하 분기와 같은 이유로 여기도 /1000이 없어야 한다(p는 kW).
+          i_load_a  += p / (Math.sqrt(3) * vn_kv * pf)
         }
       }
     }

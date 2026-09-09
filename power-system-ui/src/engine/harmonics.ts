@@ -5,10 +5,11 @@
  */
 import type { Node, Edge } from 'reactflow'
 import type {
-  NodeData, EdgeData, Bus, Transformer, Breaker, Motor, Load,
+  NodeData, EdgeData, Bus, Transformer, ThreeWindingTransformer, Breaker, Motor, Load,
   LoadflowResults, HarmonicResults, HarmonicBusResult, HarmonicSourceResult,
   HarmonicSource, CapacitorBank, Reactor,
 } from '../types'
+import { find3WTransformerBuses } from '../utils/graphTraversal'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const SBASE = 100           // MVA
@@ -84,7 +85,16 @@ function buildEdgesByNode(edges: Edge<EdgeData>[]): Map<string, Edge<EdgeData>[]
   return map
 }
 
-// Traverse closed breakers to find the nearest bus
+// Traverse closed breakers to find the nearest bus.
+// Also usable as the STARTING node on a piece of equipment itself (a motor,
+// load, capacitor, reactor, …) — at depth 0 only, look at that node's own
+// neighbors even though it's neither a bus nor a breaker, exactly like the
+// working call sites (cable endpoints, transformer neighbors) already do by
+// starting one hop away from such a node. Without this, calling
+// resolveTobus(equipmentId, ...) always returned null immediately (equipment
+// is never type 'bus' or 'breaker'), which silently meant every harmonic
+// source (motor/load), capacitor bank, and shunt reactor in this engine was
+// never found at all — computeHarmonics always reported 0% distortion.
 function resolveTobus(
   nodeId: string,
   fromId: string,
@@ -99,13 +109,17 @@ function resolveTobus(
   if (node.type === 'breaker') {
     const b = node.data.equipment as Breaker
     if (!b.is_closed || !b.in_service) return null
-    for (const edge of edgesByNode.get(nodeId) ?? []) {
-      if (!edge.data?.cable?.in_service) continue
-      const other = edge.source === nodeId ? edge.target : edge.source
-      if (other === fromId) continue
-      const result = resolveTobus(other, nodeId, nodeMap, edgesByNode, depth + 1)
-      if (result) return result
-    }
+  } else if (depth > 0) {
+    // 시작점(depth 0)이 아닌데 버스/차단기가 아니면 다른 장비를 거친 것 —
+    // 장비를 통해 다른 장비로 건너가지는 않는다(예: 모터 → 다른 모터 금지).
+    return null
+  }
+  for (const edge of edgesByNode.get(nodeId) ?? []) {
+    if (!edge.data?.cable?.in_service) continue
+    const other = edge.source === nodeId ? edge.target : edge.source
+    if (other === fromId) continue
+    const result = resolveTobus(other, nodeId, nodeMap, edgesByNode, depth + 1)
+    if (result) return result
   }
   return null
 }
@@ -161,6 +175,43 @@ function buildBranches(
       const X = Math.sqrt(Math.max(0, tr.vk_percent ** 2 - tr.vkr_percent ** 2)) / 100 * scale
       addBranch(buses[0], buses[1], R, X)
     }
+  }
+
+  // ③ 3-winding transformer — star equivalent (IEC 60076-1 §8.9), Kron-reduced
+  // to 3 pairwise HV–MV/HV–LV/MV–LV branches (same construction as ybus.ts /
+  // shortcircuit.ts / asymmetricFault.ts). Without this, any bus reachable
+  // only through a 3-winding transformer had no branch at all in this engine
+  // — just the small universal leakage shunt added below to keep the Y(h)
+  // matrix non-singular — so a harmonic source on such a bus would see it as
+  // nearly isolated and produce wildly inflated (not merely inaccurate) THDv.
+  const tr3wNodes = nodes.filter(nd => nd.type === 'transformer3w' && nd.data.equipment.in_service)
+  for (const trNode of tr3wNodes) {
+    const eq = trNode.data.equipment as ThreeWindingTransformer
+    const { hvId, mvId, lvId } = find3WTransformerBuses(trNode.id, nodes, edges)
+    if (!hvId || !mvId || !lvId) continue
+
+    const Z_hv_mv = (eq.vk_hv_percent / 100) * (SBASE / Math.min(eq.sn_hv_mva, eq.sn_mv_mva))
+    const Z_hv_lv = (eq.vk_mv_percent / 100) * (SBASE / Math.min(eq.sn_hv_mva, eq.sn_lv_mva))
+    const Z_mv_lv = (eq.vk_lv_percent / 100) * (SBASE / Math.min(eq.sn_mv_mva, eq.sn_lv_mva))
+    const Xhv = Math.max((Z_hv_mv + Z_hv_lv - Z_mv_lv) / 2, 1e-6)
+    const Xmv = Math.max((Z_hv_mv + Z_mv_lv - Z_hv_lv) / 2, 1e-6)
+    const Xlv = Math.max((Z_hv_lv + Z_mv_lv - Z_hv_mv) / 2, 1e-6)
+    const Rhv = (eq.vkr_hv_percent / 100) * (SBASE / eq.sn_hv_mva)
+    const Rmv = (eq.vkr_mv_percent / 100) * (SBASE / eq.sn_mv_mva)
+    const Rlv = (eq.vkr_lv_percent / 100) * (SBASE / eq.sn_lv_mva)
+
+    const Yhv = cinv([Rhv, Xhv]), Ymv = cinv([Rmv, Xmv]), Ylv = cinv([Rlv, Xlv])
+    const Ytot = cadd(cadd(Yhv, Ymv), Ylv)
+    if (cabs(Ytot) < 1e-12) continue
+
+    // Kron-reduced pairwise admittances → convert back to series R/X for addBranch
+    const Yhm = cdiv(cmul(Yhv, Ymv), Ytot)
+    const Yhl = cdiv(cmul(Yhv, Ylv), Ytot)
+    const Yml = cdiv(cmul(Ymv, Ylv), Ytot)
+    const Zhm = cinv(Yhm), Zhl = cinv(Yhl), Zml = cinv(Yml)
+    addBranch(hvId, mvId, Zhm[0], Zhm[1])
+    addBranch(hvId, lvId, Zhl[0], Zhl[1])
+    addBranch(mvId, lvId, Zml[0], Zml[1])
   }
 
   return branches

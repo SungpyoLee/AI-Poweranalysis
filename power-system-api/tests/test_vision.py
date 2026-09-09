@@ -96,8 +96,19 @@ def test_nameplate_to_params_transformer_renames_kva_and_impedance_fields():
 
 
 def test_nameplate_to_params_unknown_equipment_defaults_to_cable():
-    query_type, _ = nameplate_to_params({"equipment_type": "breaker"})
+    query_type, _ = nameplate_to_params({"equipment_type": "unknown"})
     assert query_type == "cable"
+
+
+def test_nameplate_to_params_breaker_routes_to_breaker_not_cable():
+    # 회귀: NAMEPLATE_PROMPT는 equipment_type으로 "breaker"를 motor/transformer와
+    # 동등한 1급 값으로 명시하고, format_nameplate_result의 eq_map도 "차단기"로
+    # 정식 표시한다 — 그런데 nameplate_to_params()는 breaker 분기가 아예 없어서
+    # else(=cable) 폴백으로 떨어졌다. calculator.py 디스패처에는 이미 'breaker':
+    # format_breaker가 있으므로(calc_breaker), 차단기 명판을 찍으면 "차단기 선정"이
+    # 아니라 엉뚱하게 "케이블 선정"으로 안내됐다.
+    query_type, _ = nameplate_to_params({"equipment_type": "breaker", "voltage_v": 380, "current_a": 100})
+    assert query_type == "breaker"
 
 
 def test_nameplate_to_params_ignores_falsy_fields():

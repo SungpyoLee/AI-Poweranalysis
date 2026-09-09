@@ -10,7 +10,7 @@ import type {
   RelayCurveType, RelaySettings, EarthFaultRelay, RelayResult,
   ShortCircuitResults, DifferentialRelayResult, LoadflowResults,
 } from '../types'
-import { getNeighborIds } from '../utils/graphTraversal'
+import { getNeighborIds, computeDistFromSource } from '../utils/graphTraversal'
 import { findTransformerBuses } from '../utils/graphTraversal'
 
 // ── Operating time: IEC 60255 + ANSI/IEEE C37.112 ────────────────────────────
@@ -49,13 +49,26 @@ function tripCalc(relay: RelaySettings | EarthFaultRelay, fault_a: number): Trip
 }
 
 // ── Protected (downstream) bus of a breaker ───────────────────────────────────
-// Uses MIN Ik" among directly-connected buses (= downstream, further from source).
-// Respects explicit protectedBusId when set.
+// "Downstream" = away from the source (Slack bus), determined structurally via
+// distFromSource (see computeDistFromSource) rather than by only looking at
+// directly-connected bus-type neighbors. This matters because most real
+// breakers gate a single piece of equipment (motor/generator) or a transformer
+// directly — not another bus — so the old "min Ik" among direct bus neighbors"
+// heuristic degenerated to picking the breaker's OWN upstream bus whenever no
+// bus sat immediately on its downstream side, which then fed wrong values into
+// findUpstreamBreaker's search (see below).
+//
+// The downstream search stops at a transformer boundary rather than crossing
+// into the other voltage level: this engine has no fault-current referral
+// through the transformer's turns ratio, so a bus beyond a transformer is in a
+// different current domain and cannot be compared against this breaker's own
+// (same-voltage-side) pickup setting. Respects explicit protectedBusId when set.
 function getDownstreamBus(
-  breakerNode: Node<NodeData>,
-  nodes: Node<NodeData>[],
-  edges: Edge<EdgeData>[],
-  sc: ShortCircuitResults,
+  breakerNode:    Node<NodeData>,
+  nodes:          Node<NodeData>[],
+  edges:          Edge<EdgeData>[],
+  sc:             ShortCircuitResults,
+  distFromSource: Map<string, number>,
 ): { busId: string; busName: string; ikss_ka: number } | null {
   const br = breakerNode.data.equipment as Breaker
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
@@ -69,7 +82,51 @@ function getDownstreamBus(
     }
   }
 
-  // Priority 2: directly-connected bus with minimum Ik" (downstream)
+  // Priority 2: nearest same-voltage bus strictly downstream (away from source)
+  const myDist = distFromSource.get(breakerNode.id)
+  if (myDist !== undefined) {
+    const visited = new Set<string>([breakerNode.id])
+    const queue: string[] = []
+    for (const nbrId of getNeighborIds(breakerNode.id, edges)) {
+      const nbrDist = distFromSource.get(nbrId)
+      if (nbrDist === undefined || nbrDist <= myDist) continue   // 상류/자기자신 방향 제외
+      visited.add(nbrId); queue.push(nbrId)
+    }
+
+    while (queue.length > 0) {
+      const curId = queue.shift()!
+      const cur   = nodeMap.get(curId)
+      if (!cur || !cur.data.equipment.in_service) continue
+
+      if (cur.type === 'bus') {
+        const r = sc.buses[curId]
+        if (r && r.ikss_ka > 0) {
+          const busEq = cur.data.equipment as Bus
+          return { busId: curId, busName: busEq.name, ikss_ka: r.ikss_ka }
+        }
+      }
+      if (cur.type === 'transformer' || cur.type === 'transformer3w') continue  // 전압 경계 — 건너가지 않음
+
+      const curDist = distFromSource.get(curId)
+      for (const nbrId of getNeighborIds(curId, edges)) {
+        if (visited.has(nbrId)) continue
+        const nbrDist = distFromSource.get(nbrId)
+        if (nbrDist === undefined || curDist === undefined || nbrDist <= curDist) continue
+        visited.add(nbrId)
+        const nbr = nodeMap.get(nbrId)
+        if (!nbr || !nbr.data.equipment.in_service) continue
+        if (nbr.type === 'breaker' && !(nbr.data.equipment as Breaker).is_closed) continue
+        queue.push(nbrId)
+      }
+    }
+  }
+
+  // Priority 3: no same-voltage downstream bus exists (dead-ends at a motor/
+  // generator/load, or immediately behind a transformer) — fall back to this
+  // breaker's own local (upstream) bus as the best available proxy for the
+  // fault current its relay must clear. This mirrors the original heuristic
+  // and is the same approximation as before for this specific case; the fix
+  // above only changes breakers that DO have a genuine downstream bus.
   const directBusIds = getNeighborIds(breakerNode.id, edges)
     .filter(id => nodeMap.get(id)?.type === 'bus')
 
@@ -91,29 +148,49 @@ function getDownstreamBus(
 }
 
 // ── Find upstream breaker with relay settings ─────────────────────────────────
-// BFS from the "source side" of the current breaker (NOT going back through the
-// protected bus). Returns the first closed breaker that has relay settings.
+// BFS strictly toward the source (via distFromSource), so it can never wander
+// into a downstream branch — the old version excluded only "the (possibly
+// wrong) protected bus" from the search and treated transformers as plain
+// pass-through nodes, which let it cross a transformer FORWARD into its own
+// downstream LV network and mistake a downstream feeder breaker for an
+// upstream one (confirmed against the bundled example: CB-103's "upstream"
+// resolved to CB-201, a breaker strictly downstream of CB-103 on the far side
+// of the same transformer). Distance-from-source makes "toward the source"
+// well-defined regardless of what kind of equipment sits on either side.
+//
+// Like getDownstreamBus, this stops at a transformer boundary rather than
+// crossing it — an upstream relay on the other side of a transformer can't be
+// evaluated against this breaker's own fault current without referring it
+// through the turns ratio, which this engine doesn't do.
 function findUpstreamBreaker(
   currentBreakerId: string,
-  protectedBusId: string,
-  nodes: Node<NodeData>[],
-  edges: Edge<EdgeData>[],
+  nodes:            Node<NodeData>[],
+  edges:            Edge<EdgeData>[],
+  distFromSource:   Map<string, number>,
 ): string | null {
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
-  const visited = new Set<string>([currentBreakerId, protectedBusId])
-  const queue: string[] = []
+  const myDist  = distFromSource.get(currentBreakerId)
+  if (myDist === undefined) return null
 
+  const visited = new Set<string>([currentBreakerId])
+  const queue: string[] = []
   for (const nbrId of getNeighborIds(currentBreakerId, edges)) {
-    if (!visited.has(nbrId)) { visited.add(nbrId); queue.push(nbrId) }
+    const nbrDist = distFromSource.get(nbrId)
+    if (nbrDist === undefined || nbrDist >= myDist) continue   // 소스 쪽(더 가까운 쪽)으로만 이동
+    visited.add(nbrId); queue.push(nbrId)
   }
 
   while (queue.length > 0) {
     const curId = queue.shift()!
     const cur   = nodeMap.get(curId)
     if (!cur || !cur.data.equipment.in_service) continue
+    if (cur.type === 'transformer' || cur.type === 'transformer3w') continue  // 전압 경계 — 건너가지 않음
 
+    const curDist = distFromSource.get(curId)
     for (const nbrId of getNeighborIds(curId, edges)) {
       if (visited.has(nbrId)) continue
+      const nbrDist = distFromSource.get(nbrId)
+      if (nbrDist === undefined || curDist === undefined || nbrDist >= curDist) continue
       visited.add(nbrId)
 
       const nbr = nodeMap.get(nbrId)
@@ -124,10 +201,12 @@ function findUpstreamBreaker(
         if (!eq.is_closed) continue          // open breaker isolates the circuit
         if (eq.relay) return nbrId            // found upstream relay breaker
         queue.push(nbrId)                     // closed non-relay breaker: traverse through
-      } else if (nbr.type === 'bus' || nbr.type === 'transformer') {
+      } else if (nbr.type === 'bus') {
         queue.push(nbrId)
       }
-      // motors / generators / loads: don't traverse (load side, not source side)
+      // transformer boundary handled above; motors/generators/loads are never
+      // strictly closer to source than curId, so they're excluded by the
+      // nbrDist < curDist check and never reached here anyway.
     }
   }
 
@@ -154,6 +233,7 @@ export function computeRelayResults(
   // 그래서 "51N 지락 계전기만 있고 50/51은 하나도 없는" 흔한 구성(저압
   // 계통 등)에서는 51N 결과까지 통째로 사라지는 버그가 있었다.
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const distFromSource = computeDistFromSource(nodes, edges)
   const results: RelayResult[] = []
 
   for (const breakerNode of breakersWithRelay) {
@@ -161,7 +241,7 @@ export function computeRelayResults(
     const relay = br.relay!
 
     // 1. Get downstream protected bus + fault current
-    const downstream = getDownstreamBus(breakerNode, nodes, edges, sc)
+    const downstream = getDownstreamBus(breakerNode, nodes, edges, sc, distFromSource)
     if (!downstream) continue
 
     const fault_a = downstream.ikss_ka * 1000
@@ -169,7 +249,7 @@ export function computeRelayResults(
     if (!self.trips) continue   // relay won't operate — skip
 
     // 2. Find upstream relay breaker
-    const upstreamId = findUpstreamBreaker(breakerNode.id, downstream.busId, nodes, edges)
+    const upstreamId = findUpstreamBreaker(breakerNode.id, nodes, edges, distFromSource)
 
     let coordination_margin_s = Infinity
     let pass = true
@@ -216,7 +296,7 @@ export function computeRelayResults(
     const ground = br.grounding ?? 'SOLID'
     if (ground === 'ISOLATED') continue
 
-    const downstream = getDownstreamBus(breakerNode, nodes, edges, sc)
+    const downstream = getDownstreamBus(breakerNode, nodes, edges, sc, distFromSource)
     if (!downstream) continue
 
     const gFactor = ground === 'SOLID' ? 0.87 : 0.50
@@ -226,7 +306,7 @@ export function computeRelayResults(
     const self = tripCalc(relay, fault_a)
     if (!self.trips) continue
 
-    const upstreamId = findUpstreamBreaker(breakerNode.id, downstream.busId, nodes, edges)
+    const upstreamId = findUpstreamBreaker(breakerNode.id, nodes, edges, distFromSource)
     let coordination_margin_s = Infinity
     let pass = true
 

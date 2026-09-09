@@ -36,6 +36,17 @@ class Generator(BaseModel):
     min_q_mvar: float = Field(-999.0)
 
 
+class Motor(BaseModel):
+    bus_id: int
+    name: str
+    pn_mech_mw: float = Field(..., description="정격 기계출력 [MW] (전기입력이 아니라 축출력)")
+    cos_phi: float = Field(0.85, description="운전 역률")
+    efficiency_percent: float = Field(95.0, description="운전 효율 [%]")
+    vn_kv: Optional[float] = Field(None, description="정격전압 [kV] (단락계산 기여분 산정용)")
+    lrc_pu: Optional[float] = Field(None, description="기동전류 배수 (locked rotor current, 단락계산 기여분 산정용)")
+    scaling: float = Field(1.0, description="부하율 배율")
+
+
 class Line(BaseModel):
     from_bus_id: int
     to_bus_id: int
@@ -58,6 +69,13 @@ class Transformer(BaseModel):
     vkr_percent: float = Field(1.0, description="저항분 임피던스전압 [%]")
     pfe_kw: float = Field(0.0, description="철손 [kW]")
     i0_percent: float = Field(0.0, description="여자전류 [%]")
+    # 탭 위치 — HV측 OLTC 가정 (프론트엔드 ybus.ts와 동일한 관례).
+    # tap_pos가 없으면(=None) 탭 중립 위치로 취급해 pandapower 기본값을 그대로 쓴다.
+    tap_pos:          Optional[float] = None
+    tap_neutral:      Optional[float] = None
+    tap_min:          Optional[float] = None
+    tap_max:          Optional[float] = None
+    tap_step_percent: Optional[float] = None
 
 
 class NetworkInput(BaseModel):
@@ -67,5 +85,6 @@ class NetworkInput(BaseModel):
     external_grids: list[ExternalGrid]
     loads: list[Load] = []
     generators: list[Generator] = []
+    motors: list[Motor] = []
     lines: list[Line] = []
     transformers: list[Transformer] = []

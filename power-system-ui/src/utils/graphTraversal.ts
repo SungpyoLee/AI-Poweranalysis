@@ -8,6 +8,42 @@ export function getNeighborIds(nodeId: string, edges: Edge<EdgeData>[]): string[
     .map(e => e.source === nodeId ? e.target : e.source)
 }
 
+// ── 소스(Slack Bus) 기준 홉 거리 ─────────────────────────────────────────────
+// 모든 Slack Bus에서 동시에 BFS해서 각 노드가 소스로부터 몇 홉 떨어져 있는지
+// 구조적으로(차단기 개폐 상태와 무관하게) 계산한다. "이 인접 노드가 상류(소스에
+// 더 가까움)인가 하류인가"를 판정하는 기준으로 쓴다 — protectionCoordination.ts의
+// 상류 차단기 탐색·하류 모선 판정이 이 거리를 기준으로 방향을 정한다.
+// (개폐 상태는 각 탐색 루프가 차단기를 실제로 지나갈 때 별도로 확인한다.)
+export function computeDistFromSource(
+  nodes: Node<NodeData>[],
+  edges: Edge<EdgeData>[],
+): Map<string, number> {
+  const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const dist = new Map<string, number>()
+  const queue: string[] = []
+
+  for (const n of nodes) {
+    if (n.type !== 'bus' || !n.data.equipment.in_service) continue
+    if ((n.data.equipment as Bus).busType !== 'Slack') continue
+    dist.set(n.id, 0)
+    queue.push(n.id)
+  }
+
+  while (queue.length > 0) {
+    const curId = queue.shift()!
+    const curDist = dist.get(curId)!
+    for (const nbrId of getNeighborIds(curId, edges)) {
+      if (dist.has(nbrId)) continue
+      const nbr = nodeMap.get(nbrId)
+      if (!nbr || !nbr.data.equipment.in_service) continue
+      dist.set(nbrId, curDist + 1)
+      queue.push(nbrId)
+    }
+  }
+
+  return dist
+}
+
 // ── 특정 노드에서 연결된 Bus 탐색 (BFS) ──────────────────────────────────────
 // 규칙:
 //   Bus 발견 → 즉시 반환
@@ -94,6 +130,11 @@ export function findReachableNodes(
   edges:   Edge<EdgeData>[]
 ): Set<string> {
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  // 폐기(in_service:false)된 케이블은 실제 계산 엔진들(loadflow.ts 등)이
+  // 전부 걸러내고 지나가지 않는다 — 여기서도 똑같이 걸러야, 그런 케이블
+  // 하나로만 연결된 버스를 "도달 가능"이라고 잘못 판정해 고립 경고를
+  // 놓치는 일이 없다.
+  const activeEdges = edges.filter(e => e.data?.cable?.in_service !== false)
   const visited = new Set<string>()
   const stack   = [startId]
 
@@ -102,12 +143,12 @@ export function findReachableNodes(
     if (visited.has(cur)) continue
     visited.add(cur)
 
-    for (const nbrId of getNeighborIds(cur, edges)) {
+    for (const nbrId of getNeighborIds(cur, activeEdges)) {
       if (visited.has(nbrId)) continue
 
-      // 개방 차단기 경로 차단
       const nbr = nodeMap.get(nbrId)
-      if (nbr?.type === 'breaker') {
+      if (!nbr || !nbr.data.equipment.in_service) continue   // 폐기된 장비도 통과 불가
+      if (nbr.type === 'breaker') {
         const eq = nbr.data.equipment as Breaker
         if (!eq.is_closed) continue
       }

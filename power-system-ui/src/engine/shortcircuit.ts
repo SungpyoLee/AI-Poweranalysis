@@ -137,15 +137,18 @@ export function runLocalShortcircuit(
     const K_T = calcKT(vkr_pu * scale, Xk_pu * scale)
     ktMap.set(trNode.id, K_T)
 
-    // Transformer π-model with off-nominal tap a on HV side (IEC 60076):
-    //   Y_HH += Ys × a²,  Y_LL += Ys,  Y_HL = Y_LH = -Ys × a
+    // Transformer π-model with off-nominal tap a on HV side (표준 오프노미널
+    // 변압기 모델 — ybus.ts와 동일한 근거로 유도: 이상변압기(비율 a:1) + 직렬
+    // 임피던스를 풀면 tap측(HV) 자기 어드미턴스와 상호항은 a로 "나눠야" 한다.
+    // 예전엔 곱셈이라 tap_pos 방향이 실제(pandapower 실측 확인)와 반대였다.
+    //   Y_HH += Ys / a²,  Y_LL += Ys,  Y_HL = Y_LH = -Ys / a
     const Z_s  = { re: vkr_pu * scale / K_T, im: Xk_pu * scale / K_T }
     const Y_s  = C.recip(Z_s)
     const a2   = a * a
-    stamp(hi, hi, { re: Y_s.re * a2, im: Y_s.im * a2 })
+    stamp(hi, hi, { re: Y_s.re / a2, im: Y_s.im / a2 })
     stamp(li, li, Y_s)
-    stamp(hi, li, { re: -Y_s.re * a, im: -Y_s.im * a })
-    stamp(li, hi, { re: -Y_s.re * a, im: -Y_s.im * a })
+    stamp(hi, li, { re: -Y_s.re / a, im: -Y_s.im / a })
+    stamp(li, hi, { re: -Y_s.re / a, im: -Y_s.im / a })
   }
 
   // 1b. Cable series impedance — P1-3 parallel runs

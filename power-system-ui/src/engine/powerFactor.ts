@@ -43,6 +43,7 @@ export interface PfcSystemResult {
 const STANDARD_KVAR = [50, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000]
 
 function roundUpStandard(kvar: number): number {
+  if (kvar <= 0) return 0   // 보상이 필요 없으면 최소 규격(50kvar)도 추천하지 않는다
   for (const s of STANDARD_KVAR) if (s >= kvar) return s
   return Math.ceil(kvar / 500) * 500
 }
@@ -81,12 +82,25 @@ export function computePowerFactorCorrection(
     const phi_before = Math.acos(Math.min(1, Math.max(-1, pf_current)))
     const phi_target = Math.acos(pfTarget)
 
-    const qc_req = Math.max(0, p_mw * (Math.tan(phi_before) - Math.tan(phi_target)))
+    // pf_current는 Q의 부호와 무관하게 항상 양수(크기)라서, 이미 진상(leading,
+    // q_mvar<0 — 과보상이거나 경부하 시 케이블 충전전류가 지배적인 경우)인
+    // 모선도 지상(lagging)과 똑같이 취급해 콘덴서를 "더" 추천했었다. 진상
+    // 모선에 콘덴서를 더 넣으면 Q가 더 음수가 돼 상황이 악화된다 — 진상
+    // 모선은 추가 보상이 필요 없다(오히려 리액터가 필요할 수 있지만 그건
+    // 이 계산의 범위 밖).
+    const qc_req = q_mvar > 0
+      ? Math.max(0, p_mw * (Math.tan(phi_before) - Math.tan(phi_target)))
+      : 0
     const qc_kvar = qc_req * 1000
     const qc_std  = roundUpStandard(qc_kvar)
     const qc_std_mvar = qc_std / 1000
 
-    const q_after    = Math.max(0, q_mvar - qc_std_mvar)
+    // 0으로 clamp하지 않는다 — 진상 모선(q_mvar<0, 위에서 qc_std_mvar=0)을
+    // 손대지 않고 그대로 보여줘야 하고, 표준 규격이 필요량보다 커서(예:
+    // 51kvar 필요한데 100kvar 규격만 있음) 과보정되는 경우도 실제로는
+    // 약간 진상 쪽으로 넘어갈 수 있다 — 그걸 억지로 0(완전 unity)으로
+    // 보여주면 거짓으로 완벽해 보인다.
+    const q_after    = q_mvar - qc_std_mvar
     const pf_after   = p_mw / Math.sqrt(p_mw ** 2 + q_after ** 2)
 
     totalP  += p_mw
@@ -105,7 +119,7 @@ export function computePowerFactorCorrection(
   const systemPf = totalP > 0
     ? totalP / Math.sqrt(totalP ** 2 + totalQ ** 2)
     : 1.0
-  const totalQ_after = Math.max(0, totalQ - totalQc)
+  const totalQ_after = totalQ - totalQc
   const systemPfAfter = totalP > 0
     ? totalP / Math.sqrt(totalP ** 2 + totalQ_after ** 2)
     : 1.0

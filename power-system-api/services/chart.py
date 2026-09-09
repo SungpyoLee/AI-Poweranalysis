@@ -8,7 +8,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from io import BytesIO
-import math
 
 plt.rcParams.update({
     'font.family': 'DejaVu Sans',
@@ -129,23 +128,24 @@ def cable_chart(params: dict) -> bytes:
 
 
 def sc_chart(params: dict) -> bytes:
+    from services.calculator import calc_shortcircuit
+
     v      = params.get('voltage_v', 22900)
     sc_mva = params.get('sc_mva', 1000)
     vn_kv  = v / 1000
-    c      = 1.1
-    z_k    = (c * vn_kv**2) / sc_mva
 
     tr_kva = params.get('power_kva', 0) or (params.get('power_kw', 0) / 0.85 if params.get('power_kw') else 0)
     vk_pct = params.get('vk_pct', 6.0)
-    if tr_kva > 0:
-        z_tr    = (vk_pct / 100) * (vn_kv**2 / (tr_kva / 1000))
-        z_total = z_k + z_tr
-    else:
-        z_total = z_k
 
-    ikss_ka = (c / z_total) * (vn_kv / math.sqrt(3)) / 1000
-    ip_ka   = 1.8 * math.sqrt(2) * ikss_ka
-    sk_mva  = ikss_ka * math.sqrt(3) * vn_kv
+    # calculator.py의 calc_shortcircuit()과 별개로 여기서 직접 공식을 다시
+    # 구현하고 있었는데, 그 사본에 불필요한 "/1000"이 하나 더 있어서 이
+    # 차트에 표시되는 Ik''/Ip/Sk''가 전부 실제 값의 1000분의 1로
+    # (예: 25.2kA가 아니라 0.0252kA로) 표시되는 버그가 있었다. 계산은
+    # calc_shortcircuit() 하나로만 하도록 정리해 재발을 막는다.
+    r = calc_shortcircuit(voltage_v=v, sc_mva=sc_mva, tr_kva=tr_kva, vk_pct=vk_pct)
+    ikss_ka = r.ikss_ka
+    ip_ka   = r.ip_ka
+    sk_mva  = r.sk_mva
 
     fig, ax = plt.subplots(figsize=(5.5, 3.5), facecolor='white')
     ax.set_facecolor(_ROW1)

@@ -81,9 +81,12 @@ export function buildNetworkPayload(
   })
 
   // ── buses 배열 ───────────────────────────────────────────────────────────────
-  const buses = busNodes.map(n => {
+  // 백엔드 NetworkInput.buses[].id는 필수 필드 — pandapower 인덱스와 동일하게 맞춘다
+  // (nodeToIndex를 만들 때 이미 busNodes.forEach((n,i)=>...)로 동일한 순서를 썼다).
+  const buses = busNodes.map((n, i) => {
     const eq = n.data.equipment as Bus
     return {
+      id:      i,
       name:    eq.name,
       vn_kv:   eq.vn_kv,
       type:    eq.busType === 'Slack' ? 'b' : eq.busType === 'PV' ? 'b' : 'b',
@@ -96,7 +99,7 @@ export function buildNetworkPayload(
     .filter(n => (n.data.equipment as Bus).busType === 'Slack')
     .map(n => {
       const busIdx = nodeToIndex.get(n.id)!
-      return { bus: busIdx, name: `Grid@${(n.data.equipment as Bus).name}`, vm_pu: 1.0, va_degree: 0 }
+      return { bus_id: busIdx, name: `Grid@${(n.data.equipment as Bus).name}`, vm_pu: 1.0, va_degree: 0 }
     })
 
   // ── generators ───────────────────────────────────────────────────────────────
@@ -110,7 +113,7 @@ export function buildNetworkPayload(
       if (busIdx === undefined) return []
       return [{
         name:        eq.name,
-        bus:         busIdx,
+        bus_id:      busIdx,
         p_mw:        eq.p_mw,
         vm_pu:       eq.vm_pu,
         sn_mva:      eq.sn_mva,
@@ -128,6 +131,9 @@ export function buildNetworkPayload(
     })
 
   // ── motors ───────────────────────────────────────────────────────────────────
+  // 백엔드 Motor 모델(pandapower create_motor 파라미터)에 맞춘 필드명/단위.
+  // pn_mech_mw는 "기계 축출력"(=rated_kw, 전기입력이 아님) — pandapower가 내부적으로
+  // efficiency_percent로 나눠 전기입력을 구한다(motorStarting.ts/cableSizing.ts와 동일한 관례).
   const motors = nodes
     .filter(n => n.type === 'motor' && n.data.equipment.in_service)
     .flatMap(n => {
@@ -137,16 +143,14 @@ export function buildNetworkPayload(
       const busIdx = nodeToIndex.get(busId)
       if (busIdx === undefined) return []
       return [{
-        name:          eq.name,
-        bus:           busIdx,
-        sn_kva:        eq.rated_kw / eq.power_factor,
-        p_kw:          eq.rated_kw,
-        vn_kv:         eq.vn_kv,
-        pf:            eq.power_factor,
-        efficiency:    eq.efficiency,
-        i_start_ratio: eq.starting_current_multiple,
-        cos_phi_start: eq.power_factor,
-        in_service:    eq.in_service,
+        name:               eq.name,
+        bus_id:             busIdx,
+        pn_mech_mw:         eq.rated_kw / 1000,
+        cos_phi:            eq.power_factor,
+        efficiency_percent: eq.efficiency,
+        vn_kv:              eq.vn_kv,
+        lrc_pu:             eq.starting_current_multiple,
+        scaling:            1.0,
       }]
     })
 
@@ -161,9 +165,9 @@ export function buildNetworkPayload(
       if (busIdx === undefined) return []
       return [{
         name:             eq.name,
-        bus:              busIdx,
-        p_kw:             eq.p_kw,
-        q_kvar:           eq.q_kvar,
+        bus_id:           busIdx,
+        p_mw:             eq.p_kw / 1000,
+        q_mvar:           eq.q_kvar / 1000,
         vn_kv:            eq.vn_kv,
         const_z_percent:  eq.const_z_percent,
         const_i_percent:  eq.const_i_percent,
@@ -183,8 +187,8 @@ export function buildNetworkPayload(
     if (hvIdx === undefined || lvIdx === undefined) return []
     return [{
       name:             eq.name,
-      hv_bus:           hvIdx,
-      lv_bus:           lvIdx,
+      hv_bus_id:        hvIdx,
+      lv_bus_id:        lvIdx,
       sn_mva:           eq.sn_mva,
       vn_hv_kv:         eq.vn_hv_kv,
       vn_lv_kv:         eq.vn_lv_kv,
@@ -210,8 +214,8 @@ export function buildNetworkPayload(
     if (fromIdx === undefined || toIdx === undefined) return []
     return [{
       name:            cable.name,
-      from_bus:        fromIdx,
-      to_bus:          toIdx,
+      from_bus_id:     fromIdx,
+      to_bus_id:       toIdx,
       std_type:        cable.std_type || null,
       length_km:       cable.length_m / 1000,
       r_ohm_per_km:    cable.r_ohm_per_km,

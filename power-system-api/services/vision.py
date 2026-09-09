@@ -126,6 +126,8 @@ def nameplate_to_params(data: dict) -> tuple[str, dict]:
         query_type = "transformer"
     elif eq_type == "motor":
         query_type = "motor"
+    elif eq_type == "breaker":
+        query_type = "breaker"
     else:
         query_type = "cable"
 

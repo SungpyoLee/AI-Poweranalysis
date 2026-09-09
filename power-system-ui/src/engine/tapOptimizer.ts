@@ -5,8 +5,11 @@
  * 알고리즘:
  *   1. LV 버스 전압 V_lv 확인
  *   2. 편차 = V_lv - 1.0 pu (+ = 높음, - = 낮음)
- *   3. 탭 위치 보정 = round(-편차 / tap_step_percent × 100)
- *      (탭을 올리면 LV 전압 올라감 → 탭 ↑ = V_lv ↑)
+ *   3. 탭 위치 보정 = round(편차 / tap_step_percent × 100)
+ *      (HV측 OLTC 가정: 탭을 올리면 LV 전압 내려감 → 탭 ↑ = V_lv ↓.
+ *       ybus.ts의 표준 오프노미널 변압기 모델과 동일한 근거 — pandapower로
+ *       직접 조류계산해 실측 확인함. 예전엔 부호가 반대라 "전압이 낮으니
+ *       탭을 올리세요"처럼, 실제로는 전압을 더 낮추는 반대 방향을 권장했다.)
  *   4. 범위 클램프 [tap_min, tap_max]
  */
 
@@ -61,11 +64,11 @@ export function optimizeTaps(
     const delta  = vLv - V_TARGET            // + = 너무 높음
     const step   = eq.tap_step_percent / 100
 
-    // 필요한 탭 변화량: 탭 +1 → LV 전압 +step_pu
-    const tapDelta   = Math.round(-delta / step)
+    // 필요한 탭 변화량: 탭 +1 → LV 전압 -step_pu (HV측 OLTC, ybus.ts와 동일한 관례)
+    const tapDelta   = Math.round(delta / step)
     const tapNew     = Math.max(eq.tap_min, Math.min(eq.tap_max, eq.tap_pos + tapDelta))
     const changed    = tapNew !== eq.tap_pos
-    const vLvAfter   = vLv + (tapNew - eq.tap_pos) * step  // 선형 근사
+    const vLvAfter   = vLv - (tapNew - eq.tap_pos) * step  // 선형 근사
 
     let reason = ''
     if (Math.abs(delta) <= V_BAND) {
