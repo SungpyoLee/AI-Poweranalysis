@@ -151,6 +151,25 @@ function buildY1(
   return Y1
 }
 
+// ── 벡터그룹 → HV/LV 권선의 접지·델타 여부 분류 ──────────────────────────────
+// 표기(예: 'YNd11', 'Dyn11', 'Yzn11')는 항상 [HV][LV][시계방향 숫자] 순서라서
+// 끝이 항상 숫자다 — 예전엔 LV가 delta인지를 endsWith('d')로 찾았는데, 이
+// 타입의 값 12개 전부에서 항상 false만 나오는(=절대 못 찾는) 죽은 코드였다.
+// includes('yn')도 지그재그 접지(zn)는 못 잡는다. HV 접두사와 끝 숫자를
+// 떼어내고 남는 가운데 구간(LV 권선 표기)을 직접 비교한다.
+export function classifyVectorGroup(vg: TransformerVectorGroup): {
+  hvGrounded: boolean; hvDelta: boolean; lvGrounded: boolean; lvDelta: boolean
+} {
+  const hvSeg = vg.match(/^(YN|Y|D)/)?.[1] ?? ''
+  const lvSeg = vg.slice(hvSeg.length).replace(/\d+$/, '')
+  return {
+    hvGrounded: hvSeg === 'YN',                    // HV grounded Y
+    hvDelta:    hvSeg === 'D',
+    lvGrounded: lvSeg === 'yn' || lvSeg === 'zn',   // LV grounded Y or grounded zigzag
+    lvDelta:    lvSeg === 'd',
+  }
+}
+
 // ── 영상 어드미턴스 행렬 Y0 ──────────────────────────────────────────────────
 // DYn 변압기: 1차(△)는 영상전류 차단 → LV bus에 shunt로만 등장
 // 케이블: r0, x0 사용
@@ -188,10 +207,7 @@ function buildY0(
     const Xk0  = Math.sqrt(Math.max(vk0 * vk0 - vkr0 * vkr0, 0))
     const s    = S_BASE / eq.sn_mva
 
-    const hvGrounded = vg.startsWith('YN')  // HV grounded Y
-    const lvGrounded = vg.includes('yn') || vg.includes('Yn')  // LV grounded Y
-    const hvDelta    = vg.startsWith('D') || vg.startsWith('d')
-    const lvDelta    = vg.endsWith('d') || vg.endsWith('D')
+    const { hvGrounded, hvDelta, lvGrounded, lvDelta } = classifyVectorGroup(vg)
 
     if (hvDelta && lvGrounded) {
       // Dyn: LV shunt admittance (delta HV blocks zero-seq)
