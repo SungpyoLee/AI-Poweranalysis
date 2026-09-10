@@ -94,6 +94,22 @@ describe('buildGraph', () => {
     expect(result.nodes[0].position).toEqual({ x: 780, y: 500 })
   })
 
+  it('회귀: 생성된 엣지의 cable.id는 그 엣지 자신의 id와 같아야 한다', () => {
+    // 예전 버그: nextEdgeId()를 edge.id용, defaultCable()용으로 각각 따로
+    // 호출해서 서로 다른 값을 만들어냈다 — useEquipmentStore.connectNodes,
+    // motorNetworkBuilder.ts 등 이 저장소의 다른 모든 엣지 생성 지점은
+    // 전부 같은 id를 그대로 defaultCable(id)에 넘겨 cable.id===edge.id를
+    // 지키는데, 이 가져오기 경로로 만든 케이블만 어긋나 있었다.
+    const symbols = [
+      sym('a', 'bus', 100, 50, 40, 30),
+      sym('b', 'motor', 100, 62, 40, 30),   // gap<4 → 픽셀검사 없이 바로 연결
+    ]
+    const result = buildGraph(bareCanvas(1000, 1000), symbols)
+    expect(result.edges).toHaveLength(1)
+    const edge = result.edges[0]
+    expect(edge.data!.cable.id).toBe(edge.id)
+  })
+
   it('감지된 라벨을 노드 이름으로 사용한다', () => {
     const symbols = [{ ...sym('m1', 'motor', 0, 0), label: 'P-101A 75kW' }]
     const result = buildGraph(bareCanvas(1000, 1000), symbols)

@@ -141,13 +141,21 @@ export function buildGraph(
       const tgtT = tgt.bbox.y
       return hasVerticalLine(canvas, cx, srcB, tgtT)
     })
-    .map(({ src, tgt }) => ({
-      id:     nextEdgeId(),
-      source: src.id,
-      target: tgt.id,
-      type:   'cable',
-      data:   { cable: defaultCable(nextEdgeId()) },
-    }))
+    .map(({ src, tgt }) => {
+      // 다른 모든 생성 지점(useEquipmentStore.connectNodes, motorNetworkBuilder.ts 등)은
+      // defaultCable(id)에 그 엣지 자신의 id를 그대로 넘겨 cable.id === edge.id를
+      // 맞춘다. 예전엔 여기서 nextEdgeId()를 두 번 호출해 서로 다른 값을 만들어
+      // 넘기는 바람에, 이 가져오기 경로로 만든 케이블만 cable.id가 소속 엣지의
+      // id와 어긋나 있었다.
+      const id = nextEdgeId()
+      return {
+        id,
+        source: src.id,
+        target: tgt.id,
+        type:   'cable' as const,
+        data:   { cable: defaultCable(id) },
+      }
+    })
 
   return { nodes, edges }
 }

@@ -4,8 +4,36 @@
  */
 
 import { useState } from 'react'
+import type { Node as RFNode } from 'reactflow'
 import type { DetectedSymbol, SymbolType } from '../import/symbolDetector'
 import type { BuildResult } from '../import/graphBuilder'
+import type { NodeData } from '../types'
+import { defaultEquipment } from '../types'
+
+/**
+ * 사용자가 검토 화면에서 장비 타입을 고쳤을 때 노드를 다시 만든다.
+ *
+ * 타입이 바뀌면 equipment의 모양 자체가 완전히 달라진다(예: Motor의
+ * rated_kw/starting_method ↔ Generator의 p_mw/vm_pu는 전혀 다른 필드) —
+ * node.type만 바꾸고 data.equipment는 예전 타입 그대로 두면, 엔진이
+ * `as Generator`로 캐스팅할 때 실제로는 Motor 필드만 있는 객체를 받아
+ * p_mw 등이 undefined가 되고, 그 undefined가 조류계산 전체에 NaN으로
+ * 조용히 전파된다. 타입이 실제로 바뀐 경우엔 새 타입의 기본 equipment를
+ * 다시 만들고(라벨/자동추출 파라미터는 유지) 통째로 교체한다.
+ */
+export function patchNodeType(
+  node:    RFNode<NodeData>,
+  newType: SymbolType,
+  sym:     DetectedSymbol | undefined,
+): RFNode<NodeData> {
+  if (newType === node.type) return node
+  const equipment = {
+    ...defaultEquipment(newType, node.id),
+    name: sym?.label.slice(0, 40) ?? node.data.equipment.name,
+    ...(sym?.params ?? {}),
+  } as NodeData['equipment']
+  return { ...node, type: newType, data: { ...node.data, equipment } }
+}
 
 const TYPE_OPTIONS: SymbolType[] = ['bus', 'transformer', 'transformer3w', 'breaker', 'motor', 'generator', 'load', 'capacitor', 'reactor']
 const TYPE_KO: Record<SymbolType, string> = {
@@ -49,11 +77,12 @@ export default function ImportReviewDialog({ symbols, graph, onImport, onBack }:
       edgeSet.has(e.id) && checked.has(e.source) && checked.has(e.target),
     )
 
-    // Patch node types if user changed them
-    const patchedNodes = filteredNodes.map(n => ({
-      ...n,
-      type: types.get(n.id) ?? n.type,
-    }))
+    // Patch node types if user changed them (모양이 다른 equipment로 다시 만듦 — patchNodeType 참고)
+    const patchedNodes = filteredNodes.map(n => {
+      const newType = (types.get(n.id) ?? n.type) as SymbolType
+      const sym     = symbols.find(s => s.id === n.id)
+      return patchNodeType(n, newType, sym)
+    })
 
     onImport(filteredSymbols, { nodes: patchedNodes, edges: filteredEdges })
   }
