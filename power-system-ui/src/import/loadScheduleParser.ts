@@ -139,17 +139,25 @@ export function parseLoadScheduleRows(raw: unknown[][]): ParsedLoadSchedule {
     const row = raw[i] as unknown[]
     if (row.every(c => c === '' || c == null)) continue
 
+    // pf는 kVA→kW 환산에 필요하므로 kw보다 먼저 구한다.
+    let pf = pfIdx >= 0 ? parseNum(row[pfIdx], 0.85) : 0.85
+    if (pf > 1) pf /= 100
+    if (pf <= 0 || pf > 1) pf = 0.85
+
     let kw = kwIdx >= 0 ? parseNum(row[kwIdx], 0) : 0
-    if (kwColName.toLowerCase().includes('hp')) kw *= 0.7457
+    const kwColLower = kwColName.toLowerCase()
+    // 회귀: KW_ALIASES에 'kva'가 들어 있어(변압기/발전기 명판이 kVA만 표기하는
+    // 경우가 흔해서) "kVA" 헤더도 이 kw 컬럼으로 잡힌다. 그런데 예전엔 'hp'만
+    // 변환하고 kVA는 그대로 kw에 대입했다 — 피상전력(kVA)을 유효전력(kW)으로
+    // 착각해, 실제보다 1/pf배(예: pf=0.85면 약 18%) 부풀려진 부하로
+    // 조류계산·케이블 산정이 이뤄졌다.
+    if (kwColLower.includes('hp')) kw *= 0.7457
+    else if (kwColLower.includes('kva')) kw *= pf
     if (kw <= 0) { skippedRows++; continue }
 
     const tag  = tagIdx  >= 0 ? (row[tagIdx]?.toString().trim()  || `ITEM-${i}`) : `ITEM-${i}`
     const typeRaw = typeIdx >= 0 ? (row[typeIdx]?.toString().trim() ?? '') : ''
     const equipType = detectType(typeRaw, tag)
-
-    let pf = pfIdx >= 0 ? parseNum(row[pfIdx], 0.85) : 0.85
-    if (pf > 1) pf /= 100
-    if (pf <= 0 || pf > 1) pf = 0.85
 
     const rawVolt = vltIdx >= 0 ? parseNum(row[vltIdx], 380) : 380
     const voltage_v = rawVolt < 20 ? rawVolt * 1000 : rawVolt

@@ -62,6 +62,19 @@ describe('parseLoadScheduleRows', () => {
     expect(result.rows[0].kw).toBeCloseTo(74.57, 1)
   })
 
+  it('회귀: kW 헤더에 kVA가 포함되면 역률을 곱해 유효전력(kW)으로 환산한다', () => {
+    // 예전 버그: KW_ALIASES에 'kva'가 있어 "Rated kVA" 헤더도 kw 컬럼으로
+    // 잡히는데, HP 환산만 있고 kVA→kW 환산이 없어서 피상전력(kVA) 값을
+    // 그대로 유효전력(kW)으로 썼다 — pf=0.8인 400kVA 발전기가 320kW가
+    // 아니라 400kW로 부풀려져 조류계산에 들어갔다.
+    const raw = [
+      ['Tag', 'Type', 'Rated kVA', 'PF', 'Voltage', 'Bus'],
+      ['DG-1', 'Generator', 400, 0.8, 380, 'BUS-A'],
+    ]
+    const result = parseLoadScheduleRows(raw)
+    expect(result.rows[0].kw).toBeCloseTo(320, 1)
+  })
+
   it('전압이 20 미만이면 kV로 해석한다', () => {
     const raw = [
       ['Tag', 'Type', 'kW', 'PF', 'Voltage', 'Bus'],
