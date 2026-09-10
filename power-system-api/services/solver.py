@@ -1,5 +1,11 @@
-import pandapower as pp
-import pandapower.shortcircuit as sc
+# pandapower는 scipy/pandas/networkx를 끌고 오는 무거운 임포트라(수백 ms ~ 수 초),
+# 모듈 로드 시점(main.py가 라우터를 등록할 때)이 아니라 실제로 조류/단락계산을
+# 호출하는 매 함수 안에서 지연 임포트한다 — Render 무료 티어처럼 콜드 스타트가
+# 있는 환경에서, 카카오봇(services.calculator 등, pandapower를 쓰지 않음) 요청이
+# 같은 프로세스에 함께 떠 있다는 이유만으로 이 임포트 비용을 덤으로 지불하지
+# 않도록 하기 위함. sys.modules에 캐시되므로 두 번째 호출부터는 사실상 공짜다.
+from __future__ import annotations
+
 import numpy as np
 from models.network import NetworkInput
 from models.results import (
@@ -9,8 +15,9 @@ from models.results import (
 )
 
 
-def _build_network(data: NetworkInput) -> tuple[pp.pandapowerNet, dict[int, int]]:
+def _build_network(data: NetworkInput) -> tuple["pp.pandapowerNet", dict[int, int]]:
     """NetworkInput → pandapower net 변환. bus_id → pp index 매핑도 반환."""
+    import pandapower as pp
     net = pp.create_empty_network(name=data.name, f_hz=data.f_hz)
 
     id_to_idx: dict[int, int] = {}
@@ -114,6 +121,7 @@ def _build_network(data: NetworkInput) -> tuple[pp.pandapowerNet, dict[int, int]
 
 
 def run_loadflow(data: NetworkInput) -> LoadFlowResult:
+    import pandapower as pp
     net, id_to_idx = _build_network(data)
     idx_to_id = {v: k for k, v in id_to_idx.items()}
 
@@ -178,6 +186,7 @@ def run_loadflow(data: NetworkInput) -> LoadFlowResult:
 
 
 def run_shortcircuit(data: NetworkInput) -> ShortCircuitResult:
+    import pandapower.shortcircuit as sc
     net, id_to_idx = _build_network(data)
     idx_to_id = {v: k for k, v in id_to_idx.items()}
 
@@ -216,6 +225,7 @@ def rms_asym_ka(ikss_ka: float, xr_ratio: float, n_cycles: float) -> float:
 
 def run_shortcircuit_cycles(data: NetworkInput) -> MultiCycleScResult:
     """3상 단락 다주기 해석 (1/2, 3, 5 사이클 비대칭 RMS 전류)."""
+    import pandapower.shortcircuit as sc
     net, id_to_idx = _build_network(data)
     idx_to_id = {v: k for k, v in id_to_idx.items()}
 

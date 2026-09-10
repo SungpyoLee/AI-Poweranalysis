@@ -8,18 +8,31 @@ POST /kakao/webhook  ← 카카오 서버에서 호출
 
 명판 인식:
   이미지 수신 → Gemini Vision → 파라미터 추출 → 계산 제안
+
+콜백(비동기) 응답:
+  카카오 스킬 서버는 5초 안에 응답해야 하는데, Render 무료 티어 콜드
+  스타트 후 첫 요청이나 Gemini 호출·차트 렌더링이 겹치면 5초를 넘길 수
+  있다 — 이 경우 카카오는 그냥 무응답 처리한다. 오픈빌더에서 해당
+  스킬의 "콜백 사용"이 켜져 있으면 요청에 userRequest.callbackUrl이
+  실려오는데, 그럴 때는 즉시 useCallback 응답으로 확인만 보내고
+  실제 계산은 백그라운드에서 마친 뒤 그 결과를 callbackUrl로 별도
+  POST한다. callbackUrl이 없으면(콜백 미설정) 예전과 동일하게 동기
+  응답한다 — 동작 변화 없이 안전하게 켤 수 있다.
 """
+import logging
 import uuid
 from collections import OrderedDict
-from fastapi import APIRouter, Request, HTTPException
+
+import httpx
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from services.parser import smart_parse, REQUIRED_BY_TYPE
+
 from services.calculator import calculate
+from services.parser import REQUIRED_BY_TYPE, smart_parse
 from services.vision import (
-    extract_image_url, recognize_nameplate,
-    nameplate_to_params, format_nameplate_result,
+    extract_image_url, format_nameplate_result,
+    nameplate_to_params, recognize_nameplate,
 )
-import logging
 
 router = APIRouter(prefix="/kakao", tags=["카카오봇"])
 logger = logging.getLogger(__name__)
@@ -238,118 +251,155 @@ def kakao_image_response(text: str, query_type: str, params: dict) -> dict:
         },
     }
 
+# ── 실제 응답 생성 (동기/콜백 두 경로가 공유) ─────────────────────────────────
+async def build_kakao_response(body: dict, user_id: str, user_text: str) -> dict:
+    # ── 전체 payload 디버그 로그 (이미지 구조 파악용) ──────────────────
+    import json as _json
+    logger.info(f"[DEBUG PAYLOAD] {_json.dumps(body, ensure_ascii=False)}")
+
+    # ── 이미지 수신 → 명판 인식 (텍스트 체크보다 먼저!) ──────────────
+    image_url = extract_image_url(body)
+    if image_url:
+        logger.info(f"[카카오봇] 이미지 수신: {image_url[:60]}…")
+
+        data = await recognize_nameplate(image_url)
+
+        if "error" in data:
+            return kakao_text(format_nameplate_result(data))
+
+        # 인식 결과 포맷팅
+        result_text = format_nameplate_result(data)
+
+        # 추출된 파라미터를 컨텍스트에 저장
+        query_type, params = nameplate_to_params(data)
+        if params:
+            save_context(user_id, query_type, params)
+
+        # 계산 유도 버튼
+        qr = []
+        if data.get("voltage_v") and data.get("power_kw"):
+            qr.append({"label": "케이블 선정",
+                       "action": "message", "messageText": "케이블 선정해줘"})
+            qr.append({"label": "기동 전압강하",
+                       "action": "message", "messageText": "기동 전압강하 계산해줘"})
+        if data.get("sn_kva"):
+            qr.append({"label": "단락전류 계산",
+                       "action": "message", "messageText": "단락전류 계산해줘"})
+        qr.append({"label": "도움말", "action": "message", "messageText": "도움말"})
+
+        return kakao_text(result_text, quick_replies=qr)
+
+    # ── 텍스트 비어있으면 환영 메시지 ────────────────────────────────────
+    if not user_text or user_text in ("처음으로", "시작", "start"):
+        return kakao_text(WELCOME_TEXT)
+
+    if any(kw in user_text for kw in RESET_KEYWORDS):
+        clear_context(user_id)
+        return kakao_text(
+            "✅ 이전 계산 조건이 초기화됐습니다.\n새로운 조건을 입력해주세요."
+        )
+
+    if any(kw in user_text for kw in ("도움말", "help", "사용법", "기능")):
+        return kakao_text(HELP_TEXT)
+
+    # ── 명판 인식 요청 키워드 ───────────────────────────────────────────
+    if any(kw in user_text for kw in ("명판", "사진", "찍었어", "이미지", "명판인식")):
+        return kakao_text(
+            "📷 명판 사진을 바로 보내주세요!\n\n"
+            "전동기·변압기 명판이 잘 보이게 찍어서\n"
+            "카카오톡 채팅창에 올려주시면\n"
+            "전기 파라미터를 자동으로 읽어드립니다.\n\n"
+            "💡 잘 찍는 법:\n"
+            "• 명판 전체가 프레임 안에 들어오게\n"
+            "• 빛 반사 없는 각도로\n"
+            "• 흐리지 않게 가까이서",
+            quick_replies=[
+                {"label": "직접 입력할게요", "action": "message",
+                 "messageText": "380V 75kW 거리 150m"},
+                {"label": "도움말", "action": "message", "messageText": "도움말"},
+            ]
+        )
+
+    # ── 재계산 명령 ──────────────────────────────────────────────────────
+    if any(kw in user_text for kw in RECALC_KEYWORDS):
+        ctx = load_context(user_id)
+        if not ctx:
+            return kakao_text(
+                "이전 계산 기록이 없습니다.\n조건을 다시 입력해주세요.\n\n예) 380V 75kW 거리 150m"
+            )
+        query_type = ctx["query_type"]
+        params     = ctx["params"]
+        logger.info(f"[카카오봇] 재계산: type={query_type}, params={params}")
+        answer = calculate(query_type, params)
+        return kakao_image_response(answer, query_type, params)
+
+    # ── 파싱 + 컨텍스트 병합 ────────────────────────────────────────────
+    raw_type, raw_params = smart_parse(user_text)
+    query_type, params   = merge_context(user_id, raw_type, raw_params)
+
+    logger.info(f"[카카오봇] 유형={query_type}, 병합파라미터={params}")
+
+    # ── 계산 실행 ────────────────────────────────────────────────────────
+    answer = calculate(query_type, params)
+
+    # 계산 성공 시 컨텍스트 저장
+    save_context(user_id, query_type, params)
+
+    return kakao_image_response(answer, query_type, params)
+
+
+_ERROR_RESPONSE = kakao_text(
+    "⚠️ 계산 중 오류가 발생했습니다.\n"
+    "입력 형식을 확인해주세요.\n\n"
+    "'도움말'을 입력하면 예시를 볼 수 있습니다."
+)
+
+
+async def _process_and_callback(body: dict, user_id: str, user_text: str, callback_url: str) -> None:
+    """콜백 경로: 백그라운드에서 계산을 마친 뒤 결과를 callbackUrl로 POST."""
+    try:
+        result = await build_kakao_response(body, user_id, user_text)
+    except Exception as e:
+        logger.error(f"[카카오봇] 콜백 처리 오류: {e}", exc_info=True)
+        result = _ERROR_RESPONSE
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(callback_url, json=result)
+            if resp.status_code >= 300:
+                logger.warning(f"[카카오봇] 콜백 응답 실패: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"[카카오봇] 콜백 전송 실패: {e}")
+
+
 # ── Webhook 엔드포인트 ────────────────────────────────────────────────────────
 @router.post("/webhook")
-async def kakao_webhook(request: Request):
+async def kakao_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body      = await request.json()
         user_text: str = body.get("userRequest", {}).get("utterance", "").strip()
         user_id:   str = body.get("userRequest", {}).get("user", {}).get("id", "anonymous")
+        callback_url: str | None = body.get("userRequest", {}).get("callbackUrl")
 
-        logger.info(f"[카카오봇] user={user_id[:8]}… 입력: {user_text!r}")
+        logger.info(f"[카카오봇] user={user_id[:8]}… 입력: {user_text!r} callback={bool(callback_url)}")
 
-        # ── 전체 payload 디버그 로그 (이미지 구조 파악용) ──────────────────
-        import json as _json
-        logger.info(f"[DEBUG PAYLOAD] {_json.dumps(body, ensure_ascii=False)}")
+        if callback_url:
+            # 콜백이 켜진 스킬 — 즉시 확인 응답만 보내고 실제 계산/응답 전송은
+            # 백그라운드로 넘긴다. 콜드 스타트·Gemini 호출·차트 렌더링이
+            # 5초를 넘겨도 카카오 쪽에서는 무응답 처리되지 않는다.
+            background_tasks.add_task(_process_and_callback, body, user_id, user_text, callback_url)
+            return JSONResponse({
+                "version": "2.0",
+                "useCallback": True,
+                "data": {"text": "🔎 계산 중입니다… 잠시만 기다려주세요"},
+            })
 
-        # ── 이미지 수신 → 명판 인식 (텍스트 체크보다 먼저!) ──────────────
-        image_url = extract_image_url(body)
-        if image_url:
-            logger.info(f"[카카오봇] 이미지 수신: {image_url[:60]}…")
-
-            # 인식 진행 중 안내 (Gemini Vision 처리 시간 ~2초)
-            data = await recognize_nameplate(image_url)
-
-            if "error" in data:
-                return JSONResponse(kakao_text(format_nameplate_result(data)))
-
-            # 인식 결과 포맷팅
-            result_text = format_nameplate_result(data)
-
-            # 추출된 파라미터를 컨텍스트에 저장
-            query_type, params = nameplate_to_params(data)
-            if params:
-                save_context(user_id, query_type, params)
-
-            # 계산 유도 버튼
-            qr = []
-            if data.get("voltage_v") and data.get("power_kw"):
-                qr.append({"label": "케이블 선정",
-                           "action": "message", "messageText": "케이블 선정해줘"})
-                qr.append({"label": "기동 전압강하",
-                           "action": "message", "messageText": "기동 전압강하 계산해줘"})
-            if data.get("sn_kva"):
-                qr.append({"label": "단락전류 계산",
-                           "action": "message", "messageText": "단락전류 계산해줘"})
-            qr.append({"label": "도움말", "action": "message", "messageText": "도움말"})
-
-            return JSONResponse(kakao_text(result_text, quick_replies=qr))
-
-        # ── 텍스트 비어있으면 환영 메시지 ────────────────────────────────────
-        if not user_text or user_text in ("처음으로", "시작", "start"):
-            return JSONResponse(kakao_text(WELCOME_TEXT))
-
-        if any(kw in user_text for kw in RESET_KEYWORDS):
-            clear_context(user_id)
-            return JSONResponse(kakao_text(
-                "✅ 이전 계산 조건이 초기화됐습니다.\n새로운 조건을 입력해주세요."
-            ))
-
-        if any(kw in user_text for kw in ("도움말", "help", "사용법", "기능")):
-            return JSONResponse(kakao_text(HELP_TEXT))
-
-        # ── 명판 인식 요청 키워드 ───────────────────────────────────────────
-        if any(kw in user_text for kw in ("명판", "사진", "찍었어", "이미지", "명판인식")):
-            return JSONResponse(kakao_text(
-                "📷 명판 사진을 바로 보내주세요!\n\n"
-                "전동기·변압기 명판이 잘 보이게 찍어서\n"
-                "카카오톡 채팅창에 올려주시면\n"
-                "전기 파라미터를 자동으로 읽어드립니다.\n\n"
-                "💡 잘 찍는 법:\n"
-                "• 명판 전체가 프레임 안에 들어오게\n"
-                "• 빛 반사 없는 각도로\n"
-                "• 흐리지 않게 가까이서",
-                quick_replies=[
-                    {"label": "직접 입력할게요", "action": "message",
-                     "messageText": "380V 75kW 거리 150m"},
-                    {"label": "도움말", "action": "message", "messageText": "도움말"},
-                ]
-            ))
-
-        # ── 재계산 명령 ──────────────────────────────────────────────────────
-        if any(kw in user_text for kw in RECALC_KEYWORDS):
-            ctx = load_context(user_id)
-            if not ctx:
-                return JSONResponse(kakao_text(
-                    "이전 계산 기록이 없습니다.\n조건을 다시 입력해주세요.\n\n예) 380V 75kW 거리 150m"
-                ))
-            query_type = ctx["query_type"]
-            params     = ctx["params"]
-            logger.info(f"[카카오봇] 재계산: type={query_type}, params={params}")
-            answer = calculate(query_type, params)
-            return JSONResponse(kakao_image_response(answer, query_type, params))
-
-        # ── 파싱 + 컨텍스트 병합 ────────────────────────────────────────────
-        raw_type, raw_params = smart_parse(user_text)
-        query_type, params   = merge_context(user_id, raw_type, raw_params)
-
-        logger.info(f"[카카오봇] 유형={query_type}, 병합파라미터={params}")
-
-        # ── 계산 실행 ────────────────────────────────────────────────────────
-        answer = calculate(query_type, params)
-
-        # 계산 성공 시 컨텍스트 저장
-        save_context(user_id, query_type, params)
-
-        return JSONResponse(kakao_image_response(answer, query_type, params))
+        # 콜백 미설정 스킬 — 예전과 동일한 동기 응답 (동작 변화 없음)
+        result = await build_kakao_response(body, user_id, user_text)
+        return JSONResponse(result)
 
     except Exception as e:
         logger.error(f"[카카오봇] 오류: {e}", exc_info=True)
-        return JSONResponse(kakao_text(
-            "⚠️ 계산 중 오류가 발생했습니다.\n"
-            "입력 형식을 확인해주세요.\n\n"
-            "'도움말'을 입력하면 예시를 볼 수 있습니다."
-        ))
+        return JSONResponse(_ERROR_RESPONSE)
 
 # ── 차트 이미지 서빙 ─────────────────────────────────────────────────────────
 @router.get("/image/{uid}")
