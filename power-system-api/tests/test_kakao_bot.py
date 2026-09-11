@@ -316,3 +316,100 @@ def test_all_reset_keywords_clear_context(keyword):
     save_context(user, "cable", {"voltage_v": 380})
     client.post("/kakao/webhook", json=kakao_payload(keyword, user))
     assert load_context(user) == {}
+
+
+# ── 콜백(비동기) 응답 경로 ─────────────────────────────────────────────────────
+# 카카오 스킬에 "콜백 사용"이 켜져 있으면 요청에 userRequest.callbackUrl이
+# 실려온다. Render 무료 티어 콜드 스타트·Gemini 호출이 5초를 넘겨도 카카오가
+# 무응답 처리하지 않도록, 이 경우엔 즉시 useCallback 확인 응답만 보내고
+# 실제 계산 결과는 백그라운드에서 그 URL로 별도 POST해야 한다.
+def kakao_payload_with_callback(utterance: str, user_id: str, callback_url: str) -> dict:
+    return {"userRequest": {"utterance": utterance, "user": {"id": user_id}, "callbackUrl": callback_url}}
+
+
+class _FakeCallbackClient:
+    """httpx.AsyncClient를 대신해 POST 호출을 기록만 하는 가짜 클라이언트."""
+    calls: list[tuple[str, dict]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, **kwargs):
+        _FakeCallbackClient.calls.append((url, json))
+
+        class _Resp:
+            status_code = 200
+            text = "ok"
+        return _Resp()
+
+
+@pytest.fixture
+def fake_callback_client(monkeypatch):
+    _FakeCallbackClient.calls = []
+    monkeypatch.setattr(kakao_bot.httpx, "AsyncClient", _FakeCallbackClient)
+    return _FakeCallbackClient
+
+
+def test_webhook_with_callback_url_acks_immediately(fake_callback_client):
+    user = "callback-user-1"
+    clear_context(user)
+    r = client.post("/kakao/webhook", json=kakao_payload_with_callback(
+        "380V 75kW 거리 150m 케이블 선정", user, "https://kapi.kakao.com/fake-callback-1",
+    ))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["useCallback"] is True
+    assert "template" not in body   # 즉시 응답은 확인용이지, 실제 계산 결과가 아니어야 함
+
+
+def test_webhook_with_callback_url_posts_real_result_to_callback(fake_callback_client):
+    # 회귀: 콜백 경로도 동기 경로(build_kakao_response)와 똑같은 계산 결과를
+    # 만들어야 한다 — 그냥 확인 응답만 보내고 실제 결과를 빠뜨리면 안 됨.
+    user = "callback-user-2"
+    clear_context(user)
+    client.post("/kakao/webhook", json=kakao_payload_with_callback(
+        "22.9kV 계통 1000MVA 단락전류 계산", user, "https://kapi.kakao.com/fake-callback-2",
+    ))
+
+    assert len(fake_callback_client.calls) == 1
+    url, sent_body = fake_callback_client.calls[0]
+    assert url == "https://kapi.kakao.com/fake-callback-2"
+    texts = [o["simpleText"]["text"] for o in sent_body["template"]["outputs"] if "simpleText" in o]
+    assert any("Ik''" in t for t in texts)
+
+
+def test_webhook_without_callback_url_stays_synchronous(fake_callback_client):
+    """callbackUrl이 없으면(콜백 미설정 스킬) 예전처럼 즉시 계산 결과를 응답해야 하고,
+    콜백 POST는 전혀 일어나지 않아야 한다."""
+    user = "no-callback-user"
+    clear_context(user)
+    r = client.post("/kakao/webhook", json=kakao_payload("22.9kV 계통 1000MVA 단락전류 계산", user))
+
+    assert "useCallback" not in r.json()
+    texts = [o["simpleText"]["text"] for o in r.json()["template"]["outputs"] if "simpleText" in o]
+    assert any("Ik''" in t for t in texts)
+    assert fake_callback_client.calls == []
+
+
+def test_webhook_callback_path_reports_friendly_error_on_exception(fake_callback_client, monkeypatch):
+    """콜백 백그라운드 처리 중 예외가 나도, 아무 응답 없이 사라지는 대신
+    친절한 오류 메시지를 callbackUrl로 보내야 한다."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("forced failure for test")
+    monkeypatch.setattr(kakao_bot, "smart_parse", boom)
+
+    user = "callback-error-user"
+    clear_context(user)
+    client.post("/kakao/webhook", json=kakao_payload_with_callback(
+        "380V 75kW", user, "https://kapi.kakao.com/fake-callback-3",
+    ))
+
+    assert len(fake_callback_client.calls) == 1
+    _, sent_body = fake_callback_client.calls[0]
+    assert "오류가 발생했습니다" in sent_body["template"]["outputs"][0]["simpleText"]["text"]
